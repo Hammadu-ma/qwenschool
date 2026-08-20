@@ -1,11 +1,13 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { NavLink, Navigate, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
-  Banknote, CalendarCheck2, ClipboardList, Clock as ClockIcon, FileBarChart2, GraduationCap, HeartHandshake, Inbox,
-  LayoutDashboard, Layers, LogOut, Megaphone, Menu, RefreshCw, ShieldCheck, Table2, Users, X, Contact,
+  Banknote, Bell, CalendarCheck2, CalendarDays, ClipboardList, Clock as ClockIcon, FileBarChart2, GraduationCap,
+  HeartHandshake, History, Inbox, KeyRound, LayoutDashboard, Layers, LogOut, Megaphone, Menu, RefreshCw,
+  ShieldAlert, ShieldCheck, Table2, Users, X, Contact,
   AlertTriangle, Check, ChevronDown, User, BookOpen, Baby, PenLine,
 } from "lucide-react";
-import { homePathFor, useApp, visibleThreads } from "./store";
+import { homePathFor, useApp } from "./store";
+import { hasPermission, totalUnreadMessages, unreadNotifications } from "./rbac";
 import { Chip, RoleBadge, UserAvatar } from "./ui";
 import type { Role } from "./types";
 
@@ -13,11 +15,21 @@ interface NavItem {
   to: string;
   label: string;
   icon: ReactNode;
+  /** Optional Level-1 permission gate — the item is hidden without it. */
+  perm?: string;
 }
 interface NavGroup {
   group: string;
   items: NavItem[];
 }
+
+const COMM_ITEMS: NavItem[] = [
+  { to: "/announcements", label: "Announcements", icon: <Megaphone className="h-4 w-4" />, perm: "communication.view" },
+  { to: "/messages", label: "Messages", icon: <Inbox className="h-4 w-4" />, perm: "communication.view" },
+  { to: "/notifications", label: "Notifications", icon: <Bell className="h-4 w-4" />, perm: "communication.view" },
+  { to: "/events", label: "Events", icon: <CalendarDays className="h-4 w-4" />, perm: "events.view" },
+  { to: "/contacts", label: "Contacts", icon: <Contact className="h-4 w-4" />, perm: "communication.view" },
+];
 
 const NAV: Record<Role, NavGroup[]> = {
   admin: [
@@ -45,16 +57,12 @@ const NAV: Record<Role, NavGroup[]> = {
       items: [
         { to: "/admin/attendance", label: "Attendance", icon: <CalendarCheck2 className="h-4 w-4" /> },
         { to: "/admin/fees", label: "Fees", icon: <Banknote className="h-4 w-4" /> },
-        { to: "/admin/users", label: "Users & roles", icon: <ShieldCheck className="h-4 w-4" /> },
+        { to: "/admin/users", label: "Users & roles", icon: <ShieldCheck className="h-4 w-4" />, perm: "users.manage" },
+        { to: "/admin/roles", label: "Roles & permissions", icon: <KeyRound className="h-4 w-4" />, perm: "roles.manage" },
+        { to: "/admin/audit", label: "Audit log", icon: <History className="h-4 w-4" />, perm: "audit.view" },
       ],
     },
-    {
-      group: "Communication",
-      items: [
-        { to: "/notices", label: "Notice board", icon: <Megaphone className="h-4 w-4" /> },
-        { to: "/messages", label: "Messages", icon: <Inbox className="h-4 w-4" /> },
-      ],
-    },
+    { group: "Communication", items: [...COMM_ITEMS, { to: "/moderation", label: "Moderation", icon: <ShieldAlert className="h-4 w-4" />, perm: "communication.moderate" }] },
   ],
   teacher: [
     { group: "Overview", items: [{ to: "/teacher/dashboard", label: "Dashboard", icon: <LayoutDashboard className="h-4 w-4" /> }] },
@@ -68,13 +76,7 @@ const NAV: Record<Role, NavGroup[]> = {
         { to: "/teacher/assignments", label: "Assignments", icon: <ClipboardList className="h-4 w-4" /> },
       ],
     },
-    {
-      group: "Communication",
-      items: [
-        { to: "/notices", label: "Notice board", icon: <Megaphone className="h-4 w-4" /> },
-        { to: "/messages", label: "Messages", icon: <Inbox className="h-4 w-4" /> },
-      ],
-    },
+    { group: "Communication", items: COMM_ITEMS },
     { group: "Account", items: [{ to: "/profile", label: "My profile", icon: <User className="h-4 w-4" /> }] },
   ],
   student: [
@@ -88,13 +90,7 @@ const NAV: Record<Role, NavGroup[]> = {
         { to: "/student/assignments", label: "My assignments", icon: <PenLine className="h-4 w-4" /> },
       ],
     },
-    {
-      group: "Communication",
-      items: [
-        { to: "/notices", label: "Notice board", icon: <Megaphone className="h-4 w-4" /> },
-        { to: "/messages", label: "Messages", icon: <Inbox className="h-4 w-4" /> },
-      ],
-    },
+    { group: "Communication", items: COMM_ITEMS },
     { group: "Account", items: [{ to: "/profile", label: "My profile", icon: <User className="h-4 w-4" /> }] },
   ],
   guardian: [
@@ -108,13 +104,7 @@ const NAV: Record<Role, NavGroup[]> = {
         { to: "/guardian/assignments", label: "Assignments", icon: <PenLine className="h-4 w-4" /> },
       ],
     },
-    {
-      group: "Communication",
-      items: [
-        { to: "/notices", label: "Notice board", icon: <Megaphone className="h-4 w-4" /> },
-        { to: "/messages", label: "Messages", icon: <Inbox className="h-4 w-4" /> },
-      ],
-    },
+    { group: "Communication", items: COMM_ITEMS },
     { group: "Account", items: [{ to: "/profile", label: "My profile", icon: <User className="h-4 w-4" /> }] },
   ],
 };
@@ -160,7 +150,8 @@ export function AppShell() {
   if (!currentUser) return <Navigate to="/login" replace />;
 
   const groups = NAV[currentUser.role];
-  const unread = visibleThreads(db, currentUser).filter((t) => !t.read).length;
+  const unreadMsgs = totalUnreadMessages(db, currentUser);
+  const unreadNotifs = unreadNotifications(db, currentUser);
   const year = db.years.find((y) => y.id === yearId);
 
   const sidebar = (

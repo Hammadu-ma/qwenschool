@@ -12,7 +12,10 @@ import {
 import {
   AssignmentsPage, AttendancePage, ClassesPage, FeesPage, MarkEntryPage, ReportsPage, TimetablePage,
 } from "./pages/academics";
-import { MessagesPage, NoticesPage } from "./pages/communication";
+import {
+  AnnouncementsPage, ContactsPage, EventsPage, MessagesPage, ModerationPage, NotificationsPage,
+} from "./pages/communication";
+import { AuditPage, RolesPage } from "./pages/admin";
 
 /** Route-level authorization: checks the signed-in role, blocks everything else. */
 function Guard({ roles, required, children }: { roles: Role[]; required?: string; children: ReactNode }) {
@@ -53,10 +56,19 @@ export default function App() {
           <Route path="/" element={<HomeRedirect />} />
 
           <Route element={<AppShell />}>
-            {/* shared across all authenticated roles */}
-            <Route path="/notices" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><NoticesPage /></Guard>} />
+            {/* shared across all authenticated roles — communication (relationship-checked inside) */}
+            <Route path="/announcements" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><AnnouncementsPage /></Guard>} />
             <Route path="/messages" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><MessagesPage /></Guard>} />
+            <Route path="/messages/:id" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><MessagesPage /></Guard>} />
+            <Route path="/notifications" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><NotificationsPage /></Guard>} />
+            <Route path="/events" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><EventsPage /></Guard>} />
+            <Route path="/contacts" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><ContactsPage /></Guard>} />
+            <Route path="/moderation" element={<Guard roles={["admin"]} required="Moderator"><ModerationPage /></Guard>} />
             <Route path="/profile" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><ProfilePage /></Guard>} />
+
+            {/* system administration — permission-checked inside as well */}
+            <Route path="/admin/roles" element={<Guard roles={["admin"]} required="Super Admin"><RolesPage /></Guard>} />
+            <Route path="/admin/audit" element={<Guard roles={["admin"]} required="Administrator"><AuditPage /></Guard>} />
 
             {/* administrator */}
             <Route path="/admin/dashboard" element={<Guard roles={["admin"]} required="Administrator"><AdminDashboard /></Guard>} />

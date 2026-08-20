@@ -233,12 +233,6 @@ export const audienceContainsUser = (db: DB, user: User | null, aud: Audience): 
   }
 };
 
-export const visibleNotices = (db: DB, user: User | null) =>
-  db.notices.filter((n) => audienceContainsUser(db, user, n.audience));
-
-export const visibleThreads = (db: DB, user: User | null) =>
-  db.threads.filter((t) => audienceContainsUser(db, user, t.to));
-
 export const audienceLabel = (db: DB, aud: Audience) => {
   switch (aud.kind) {
     case "everyone": return "Everyone";

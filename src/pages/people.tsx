@@ -16,6 +16,7 @@ import {
   UserAvatar, tdCls, thCls,
 } from "../ui";
 import { AccessDenied } from "./Auth";
+import { defaultRoleIdFor, hasPermission, pushAudit } from "../rbac";
 
 /* ================= students directory (role-scoped) ================= */
 export function StudentsPage({ scoped }: { scoped?: boolean }) {
@@ -170,7 +171,7 @@ function RegisterStudentModal({ onClose, onSaved }: { onClose: () => void; onSav
       if (f.makeLogin) {
         d.users.push({
           id: uid(), name: `${f.firstName.trim()} ${f.lastName.trim()}`, username: f.username.trim(), password: f.password.trim(),
-          role: "student", status: "active", studentId: id, createdAt: todayISO(),
+          role: "student", roleId: "student", status: "active", studentId: id, createdAt: todayISO(),
         });
       }
     });
@@ -706,7 +707,7 @@ export function FamiliesPage() {
         u.name = edit.name.trim(); u.username = edit.username.trim(); u.password = edit.password.trim();
         u.phone = edit.phone.trim(); u.email = edit.email.trim(); u.childrenIds = edit.childrenIds;
       } else {
-        d.users.push({ id: uid(), name: edit.name.trim(), username: edit.username.trim(), password: edit.password.trim(), role: "guardian", status: "active", phone: edit.phone.trim(), email: edit.email.trim(), childrenIds: edit.childrenIds, createdAt: todayISO() });
+        d.users.push({ id: uid(), name: edit.name.trim(), username: edit.username.trim(), password: edit.password.trim(), role: "guardian", roleId: "guardian", status: "active", phone: edit.phone.trim(), email: edit.email.trim(), childrenIds: edit.childrenIds, createdAt: todayISO() });
       }
     });
     toast(edit.id ? "Guardian updated." : "Guardian account created.");
@@ -791,7 +792,7 @@ export function UsersPage() {
   const { db, currentUser, update, toast } = useApp();
   const [edit, setEdit] = useState<User | "new" | null>(null);
 
-  const blank: User = { id: "", name: "", username: "", password: "", role: "student", status: "active", createdAt: todayISO() };
+  const blank: User = { id: "", name: "", username: "", password: "", role: "student", roleId: "student", status: "active", createdAt: todayISO() };
   const draft = edit === "new" ? blank : edit;
 
   const set = (patch: Partial<User>) => setEdit((p) => (p && p !== "new" ? { ...p, ...patch } : p === "new" ? { ...blank, ...patch } : p));
@@ -897,12 +898,19 @@ export function UsersPage() {
             <Field label="Email"><TextInput value={draft.email ?? ""} onChange={(e) => set({ email: e.target.value })} /></Field>
             <Field label="Username" required><TextInput value={draft.username} onChange={(e) => set({ username: e.target.value })} className="font-mono" /></Field>
             <Field label="Password" required><TextInput value={draft.password} onChange={(e) => set({ password: e.target.value })} className="font-mono" /></Field>
-            <Field label="Role" required>
-              <Select value={draft.role} onChange={(e) => set({ role: e.target.value as Role, teacherId: undefined, studentId: undefined, childrenIds: e.target.value === "guardian" ? [] : undefined })}>
+            <Field label="Base role" required hint="drives relationships">
+              <Select value={draft.role} onChange={(e) => { const r = e.target.value as Role; set({ role: r, roleId: defaultRoleIdFor(r), teacherId: undefined, studentId: undefined, childrenIds: r === "guardian" ? [] : undefined }); }}>
                 <option value="admin">Administrator</option>
                 <option value="teacher">Teacher</option>
                 <option value="student">Student</option>
                 <option value="guardian">Guardian</option>
+              </Select>
+            </Field>
+            <Field label="Permission profile" required hint="drives what they can do">
+              <Select value={draft.roleId} onChange={(e) => set({ roleId: e.target.value })}>
+                {db.roles.filter((r) => r.status === "active" && r.appliesTo.includes(draft.role)).map((r) => (
+                  <option key={r.id} value={r.id}>{r.name}{r.system ? "" : " · custom"}</option>
+                ))}
               </Select>
             </Field>
             <Field label="Status" required>

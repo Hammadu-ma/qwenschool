@@ -4,13 +4,40 @@ export type ID = string;
 export type Role = "admin" | "teacher" | "student" | "guardian";
 export type UserStatus = "active" | "disabled";
 
+/**
+ * A role is a named collection of permissions. `permissions` holds permission
+ * ids from the central catalog (or "*" for full access). System roles are
+ * protected from deletion; their permission sets remain editable by a
+ * super-admin so the school can tune them.
+ */
+export interface RoleDef {
+  id: ID;
+  name: string;
+  description: string;
+  permissions: string[];
+  status: "active" | "disabled";
+  /** System roles can't be removed; only their permissions may change. */
+  system: boolean;
+  /** Which base roles this profile may be assigned to. */
+  appliesTo: Role[];
+}
+
 export interface User {
   id: ID;
   name: string;
   username: string;
   /** Demo credential. A real deployment would store a salted hash server-side. */
   password: string;
+  /**
+   * Base role — the entity type that drives RELATIONSHIPS (who this person is
+   * connected to: teacher→assignments, student→enrollment, guardian→children).
+   */
   role: Role;
+  /**
+   * Permission profile — drives Level-1 role PERMISSIONS (what actions this
+   * account may perform). Points at a RoleDef in db.roles.
+   */
+  roleId: ID;
   status: UserStatus;
   email?: string;
   phone?: string;
@@ -189,34 +216,100 @@ export type Audience =
   | { kind: "section-students"; classId: ID; sectionId: ID }
   | { kind: "section-guardians"; classId: ID; sectionId: ID };
 
-export interface Notice {
+export type AnnouncementStatus = "draft" | "scheduled" | "published" | "archived";
+
+/** One-to-many official communication. References entities by id — never duplicates them. */
+export interface Announcement {
   id: ID;
   title: string;
   body: string;
   category: NoticeCategory;
+  senderId: ID;
   audience: Audience;
-  author: string;
-  authorRole: Role;
-  at: string;
-  pinned: boolean;
+  status: AnnouncementStatus;
+  createdAt: string;
+  scheduledFor?: string; // ISO datetime; becomes published once reached
+  publishedAt?: string;
+  editedAt?: string;
+  pinned?: boolean;
+  /** user ids that have opened/read the announcement (read tracking) */
+  readBy?: ID[];
 }
 
-export interface ThreadMessage {
+/** One-to-one (or small group) conversation, anchored to school context. */
+export type ConversationStatus = "active" | "archived" | "hidden";
+
+export interface Conversation {
   id: ID;
-  fromName: string;
-  fromRole: Role;
+  type: "direct";
+  participants: ID[]; // user ids
+  relatedStudentId?: ID;
+  relatedClassId?: ID;
+  relatedSectionId?: ID;
+  relatedSubjectId?: ID;
+  createdAt: string;
+  updatedAt: string;
+  status: ConversationStatus;
+}
+
+export type MessageStatus = "sent" | "read";
+
+export interface Message {
+  id: ID;
+  conversationId: ID;
+  senderId: ID;
+  body: string;
+  createdAt: string;
+  readBy: ID[];
+  status: MessageStatus;
+}
+
+export type ReportStatus = "open" | "resolved" | "dismissed";
+
+export interface MessageReport {
+  id: ID;
+  messageId: ID;
+  conversationId: ID;
+  reporterId: ID;
+  reason: string;
+  detail?: string;
+  at: string;
+  status: ReportStatus;
+}
+
+/** System-generated notification. */
+export interface AppNotification {
+  id: ID;
+  userId: ID;
+  type: "announcement" | "message" | "homework" | "result" | "attendance" | "event" | "system";
+  title: string;
   body: string;
   at: string;
+  read: boolean;
 }
 
-export interface CommThread {
+/** School calendar event, optionally audience-targeted. */
+export interface SchoolEvent {
   id: ID;
-  subject: string;
-  to: Audience;
-  messages: ThreadMessage[];
-  read: boolean;
-  /** user id of the thread author — drives the "Sent" folder */
-  createdBy?: ID;
+  title: string;
+  description?: string;
+  date: string; // yyyy-mm-dd
+  time?: string;
+  location?: string;
+  category: NoticeCategory;
+  audience: Audience;
+  createdBy: ID;
+}
+
+/** Security/activity audit entry. */
+export interface AuditEntry {
+  id: ID;
+  userId: ID;
+  userName: string;
+  action: string;
+  target: string;
+  detail?: string;
+  at: string;
 }
 
 export interface Settings {
@@ -240,7 +333,13 @@ export interface DB {
   grading: GradeBand[];
   attendance: AttendanceRecord[];
   fees: FeeItem[];
-  notices: Notice[];
-  threads: CommThread[];
+  roles: RoleDef[];
+  announcements: Announcement[];
+  conversations: Conversation[];
+  messages: Message[];
+  reports: MessageReport[];
+  notifications: AppNotification[];
+  events: SchoolEvent[];
+  audit: AuditEntry[];
   settings: Settings;
 }
