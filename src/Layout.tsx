@@ -175,34 +175,41 @@ export function AppShell() {
       </div>
 
       <nav className="flex-1 overflow-y-auto px-3 pb-4">
-        {groups.map((g) => (
-          <div key={g.group} className="mt-3">
-            <p className="px-2 pb-1.5 text-[9.5px] font-bold uppercase tracking-[0.2em] text-pine-400/80">{g.group}</p>
-            {g.items.map((it) => {
-              const badge = it.to === "/messages" && unread > 0;
-              return (
-                <NavLink
-                  key={it.to}
-                  to={it.to}
-                  className={({ isActive }) =>
-                    `group relative mb-0.5 flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] font-semibold transition-all duration-150 ${
-                      isActive ? "bg-pine-800 text-white shadow-sm" : "text-pine-200/85 hover:bg-pine-900 hover:text-white"
-                    }`
-                  }
-                >
-                  {({ isActive }) => (
-                    <>
-                      {isActive && <span className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r bg-gold-400" />}
-                      <span className={isActive ? "text-gold-400" : "text-pine-400 group-hover:text-pine-200"}>{it.icon}</span>
-                      <span className="flex-1">{it.label}</span>
-                      {badge && <span className="live-dot rounded-full bg-gold-400 px-1.5 py-0.5 font-mono text-[9.5px] font-bold text-pine-950">{unread}</span>}
-                    </>
-                  )}
-                </NavLink>
-              );
-            })}
-          </div>
-        ))}
+        {groups.map((g) => {
+          const items = g.items.filter((it) => !it.perm || hasPermission(db, currentUser, it.perm));
+          if (!items.length) return null;
+          return (
+            <div key={g.group} className="mt-3">
+              <p className="px-2 pb-1.5 text-[9.5px] font-bold uppercase tracking-[0.2em] text-pine-400/80">{g.group}</p>
+              {items.map((it) => {
+                const badge =
+                  it.to === "/messages" && unreadMsgs > 0 ? unreadMsgs
+                  : it.to === "/notifications" && unreadNotifs > 0 ? unreadNotifs
+                  : 0;
+                return (
+                  <NavLink
+                    key={it.to}
+                    to={it.to}
+                    className={({ isActive }) =>
+                      `group relative mb-0.5 flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] font-semibold transition-all duration-150 ${
+                        isActive ? "bg-pine-800 text-white shadow-sm" : "text-pine-200/85 hover:bg-pine-900 hover:text-white"
+                      }`
+                    }
+                  >
+                    {({ isActive }) => (
+                      <>
+                        {isActive && <span className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r bg-gold-400" />}
+                        <span className={isActive ? "text-gold-400" : "text-pine-400 group-hover:text-pine-200"}>{it.icon}</span>
+                        <span className="flex-1">{it.label}</span>
+                        {badge > 0 && <span className="live-dot rounded-full bg-gold-400 px-1.5 py-0.5 font-mono text-[9.5px] font-bold text-pine-950">{badge}</span>}
+                      </>
+                    )}
+                  </NavLink>
+                );
+              })}
+            </div>
+          );
+        })}
       </nav>
 
       <div className="border-t border-pine-800/80 p-3">

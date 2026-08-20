@@ -8,8 +8,8 @@ import { DAYS, PERIODS } from "../data/seed";
 import {
   attendanceStats, childrenOf, fmtShort, getSubject, guardianOfStudent, sectionShort, shortName, studentAverage,
   studentOf, studentResults, teacherPairs, teacherStudentIds, teachersOfStudent, timeAgo, todayISO, useApp,
-  visibleNotices,
 } from "../store";
+import { visibleAnnouncements } from "../rbac";
 import { Avatar, Btn, Chip, Panel, Ring, RoleBadge, Stat } from "../ui";
 import type { Student } from "../types";
 
@@ -37,29 +37,31 @@ function DayBanner({ title, kicker, chips, children }: { title: ReactNode; kicke
 function NoticeDigest() {
   const { db, currentUser } = useApp();
   const nav = useNavigate();
-  const notices = [...visibleNotices(db, currentUser)].sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.at.localeCompare(a.at)).slice(0, 3);
+  const notices = [...visibleAnnouncements(db, currentUser)]
+    .sort((a, b) => Number(b.pinned ?? false) - Number(a.pinned ?? false) || (b.publishedAt ?? b.createdAt).localeCompare(a.publishedAt ?? a.createdAt))
+    .slice(0, 3);
   return (
-    <Panel className="anim-rise p-5" >
+    <Panel className="anim-rise p-5">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Megaphone className="h-4 w-4 text-pine-600" />
-          <h2 className="font-display text-[15px] font-bold tracking-tight">Notice board</h2>
+          <h2 className="font-display text-[15px] font-bold tracking-tight">Announcements</h2>
         </div>
-        <Btn variant="ghost" size="sm" onClick={() => nav("/notices")}>View board <ArrowRight className="h-3.5 w-3.5" /></Btn>
+        <Btn variant="ghost" size="sm" onClick={() => nav("/announcements")}>View board <ArrowRight className="h-3.5 w-3.5" /></Btn>
       </div>
       <ul className="mt-3 space-y-2.5">
         {notices.map((n) => (
           <li key={n.id}>
-            <button onClick={() => nav("/notices")} className="group flex w-full cursor-pointer items-start gap-2.5 text-left">
+            <button onClick={() => nav("/announcements")} className="group flex w-full cursor-pointer items-start gap-2.5 text-left">
               <span className="mt-1 h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: CAT_COLOR[n.category] }} />
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-[12.5px] font-bold leading-snug text-ink transition-colors group-hover:text-pine-800">{n.title}</span>
-                <span className="text-[10.5px] text-soft">{n.category}{n.pinned ? " · Pinned" : ""} · {timeAgo(n.at)}</span>
+                <span className="text-[10.5px] text-soft">{n.category}{n.pinned ? " · Pinned" : ""} · {timeAgo(n.publishedAt ?? n.createdAt)}</span>
               </span>
             </button>
           </li>
         ))}
-        {notices.length === 0 && <li className="text-[11.5px] text-soft">Nothing posted for your audience yet.</li>}
+        {notices.length === 0 && <li className="text-[11.5px] text-soft">Nothing published for your audience yet.</li>}
       </ul>
     </Panel>
   );
