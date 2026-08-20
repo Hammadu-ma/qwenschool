@@ -1,18 +1,19 @@
 import { useMemo, useState } from "react";
 import {
-  AlertTriangle, CalendarCheck2, Check, ClipboardList,
-  FileBarChart2, Layers, Pencil, Plus, Send, Table2, Trash2,
+  AlertTriangle, CalendarCheck2, Check, CheckCheck, ClipboardList, FileBarChart2, Globe2, Layers, Pencil, Plus,
+  RotateCcw, Send, ShieldCheck, Table2, Trash2, Undo2,
 } from "lucide-react";
-import type { AssessmentItem, AssessmentStructure, AttendanceStatus, Student } from "../types";
+import type { AssessmentItem, AssessmentStructure, AttendanceStatus, Student, Submission } from "../types";
 import { DAYS, PERIODS } from "../data/seed";
 import {
   assessmentCalc, attendanceStats, childrenOf, feeStats, fmt1, fmtDate, getClass, getSection, getSubject,
-  gradeFor, ordinal, sectionLabel, sectionShort, shortName, studentAverage, studentOf, studentResults,
-  structureRanks, structureWeightSum, teacherFor, teacherPairs, teacherStudentIds, teachersOfStudent, todayISO,
-  uid, useApp,
+  gradeFor, isPublished, ordinal, sectionLabel, sectionShort, shortName, studentAverage, studentOf, studentResults,
+  structureRanks, structureWeightSum, submissionFor, submissionStatus, teacherFor, teacherPairs, teacherStudentIds,
+  teachersOfStudent, todayISO, uid, useApp,
 } from "../store";
+import { hasPermission, pushAudit, pushNotifications } from "../rbac";
 import {
-  Avatar, Btn, Chip, EmptyState, Field, Modal, PageHead, Panel, Ring, Select, Tabs, TextInput, tdCls, thCls,
+  Avatar, Btn, Chip, EmptyState, Field, Modal, PageHead, Panel, Ring, Select, Tabs, TextArea, TextInput, tdCls, thCls,
 } from "../ui";
 
 const PERIOD_OPTIONS = ["Semester 1", "Semester 2", "Annual"];
@@ -302,8 +303,102 @@ export function MarkEntryPage() {
 
   const ranks = structure ? structureRanks(db, structure) : {};
 
+  /* ---------- submission workflow (submit → approve/return → publish) ---------- */
+  const submission = structure ? submissionFor(db, structure.id) : undefined;
+  const status = structure ? submissionStatus(db, structure.id) : "draft";
+  const canApprove = hasPermission(db, currentUser, "results.manage");
+  const canPublish = hasPermission(db, currentUser, "results.publish");
+  const canEnter = hasPermission(db, currentUser, "exams.enter_marks") || isAdmin;
+  /** Marks are editable only while in draft/returned, and only by someone who may enter marks. */
+  const canEdit = canEnter && (status === "draft" || status === "returned");
+  const [confirmSubmit, setConfirmSubmit] = useState(false);
+  const [returnOpen, setReturnOpen] = useState(false);
+  const [returnReason, setReturnReason] = useState("");
+  const [confirmPublish, setConfirmPublish] = useState(false);
+
+  const ensureSubmission = (d: { submissions: Submission[] }, structureId: string): Submission => {
+    let s = d.submissions.find((x) => x.structureId === structureId);
+    if (!s) {
+      s = { id: uid(), structureId, status: "draft" };
+      d.submissions.push(s);
+    }
+    return s;
+  };
+
+  const doSubmit = () => {
+    if (!structure || !currentUser) return;
+    update((d) => {
+      const s = ensureSubmission(d, structure.id);
+      s.status = "submitted";
+      s.submittedBy = currentUser.id;
+      s.submittedAt = new Date().toISOString();
+      s.returnReason = undefined;
+      pushAudit(d, currentUser, "marks.submit", `${getSubject(db, structure.subjectId)?.name} · ${getClass(db, structure.classId)?.name} · ${structure.period}`, "Submitted for review");
+      const approvers = d.users.filter((u) => u.status === "active" && u.id !== currentUser.id && d.roles.find((r) => r.id === u.roleId)?.permissions.includes("results.manage"));
+      pushNotifications(d, approvers.map((u) => u.id), "result", "Marks awaiting review", `${currentUser.name} submitted ${getSubject(db, structure.subjectId)?.name} — ${getClass(db, structure.classId)?.name}.`);
+    });
+    setConfirmSubmit(false);
+    toast("Submitted for administrative review.");
+  };
+
+  const doApprove = () => {
+    if (!structure || !currentUser) return;
+    update((d) => {
+      const s = ensureSubmission(d, structure.id);
+      s.status = "approved";
+      s.approvedBy = currentUser.id;
+      s.approvedAt = new Date().toISOString();
+      pushAudit(d, currentUser, "marks.approve", `${getSubject(db, structure.subjectId)?.name} · ${getClass(db, structure.classId)?.name}`, "Approved");
+      if (s.submittedBy) pushNotifications(d, [s.submittedBy], "result", "Marks approved", `Your ${getSubject(db, structure.subjectId)?.name} marks were approved by ${currentUser.name}.`);
+    });
+    toast("Marks approved.");
+  };
+
+  const doReturn = () => {
+    if (!structure || !currentUser || !returnReason.trim()) { toast("A reason is required to return marks.", "warn"); return; }
+    update((d) => {
+      const s = ensureSubmission(d, structure.id);
+      s.status = "returned";
+      s.returnedBy = currentUser.id;
+      s.returnedAt = new Date().toISOString();
+      s.returnReason = returnReason.trim();
+      pushAudit(d, currentUser, "marks.return", `${getSubject(db, structure.subjectId)?.name} · ${getClass(db, structure.classId)?.name}`, returnReason.trim());
+      if (s.submittedBy) pushNotifications(d, [s.submittedBy], "result", "Marks returned for correction", returnReason.trim());
+    });
+    setReturnOpen(false);
+    setReturnReason("");
+    toast("Returned for correction.");
+  };
+
+  const doPublish = () => {
+    if (!structure || !currentUser) return;
+    update((d) => {
+      const s = ensureSubmission(d, structure.id);
+      s.status = "published";
+      s.publishedBy = currentUser.id;
+      s.publishedAt = new Date().toISOString();
+      pushAudit(d, currentUser, "results.publish", `${getSubject(db, structure.subjectId)?.name} · ${getClass(db, structure.classId)?.name}`, "Published to students & families");
+      const classStudents = d.students.filter((st) => st.enrollment?.classId === structure.classId);
+      const recipients = d.users.filter((u) => u.status === "active" && (classStudents.some((st) => u.studentId === st.id) || (u.childrenIds ?? []).some((cid) => classStudents.some((st) => st.id === cid))));
+      pushNotifications(d, recipients.map((u) => u.id), "result", "Results published", `${getSubject(db, structure.subjectId)?.name} results for ${getClass(db, structure.classId)?.name} are now available.`);
+    });
+    setConfirmPublish(false);
+    toast("Published — students and families can now view these results.");
+  };
+
+  const doReopen = () => {
+    if (!structure || !currentUser) return;
+    update((d) => {
+      const s = ensureSubmission(d, structure.id);
+      s.status = "draft";
+      s.approvedBy = undefined; s.approvedAt = undefined; s.publishedBy = undefined; s.publishedAt = undefined;
+      pushAudit(d, currentUser, "marks.reopen", `${getSubject(db, structure.subjectId)?.name} · ${getClass(db, structure.classId)?.name}`, "Reopened for editing");
+    });
+    toast("Reopened — marks are editable again.");
+  };
+
   const setScore = (studentId: string, item: AssessmentItem, raw: string) => {
-    if (!structure) return;
+    if (!structure || !canEdit) return;
     update((d) => {
       const byStudent = (d.assessmentMarks[structure.id] = d.assessmentMarks[structure.id] ?? {});
       const row = (byStudent[studentId] = byStudent[studentId] ?? {});
@@ -350,10 +445,41 @@ export function MarkEntryPage() {
                   </h2>
                   <p className="text-[11px] text-pine-300">Weights: {structure.items.map((i) => `${i.name} ${i.weight}%`).join(" · ")} · Σ {fmt1(structureWeightSum(structure))}%</p>
                 </div>
-                <div className="flex items-center gap-2">
-                  {savedAt && <Chip tone="pine" className="!border-pine-600 !bg-pine-800 !text-pine-100"><Check className="h-3 w-3" /> Saved {savedAt}</Chip>}
+                <div className="flex flex-wrap items-center gap-2">
+                  {savedAt && status === "draft" && <Chip tone="pine" className="!border-pine-600 !bg-pine-800 !text-pine-100"><Check className="h-3 w-3" /> Saved {savedAt}</Chip>}
+                  <SubmissionChip status={status} />
                   {isAdmin && <Btn size="sm" variant="gold" onClick={() => setEditStruct(structure)}><Pencil className="h-3.5 w-3.5" /> Edit structure</Btn>}
                 </div>
+              </div>
+
+              {/* workflow action bar */}
+              <div className="flex flex-wrap items-center gap-2 border-b border-mist bg-paper/70 px-4 py-3 sm:px-5">
+                <div className="flex flex-wrap items-center gap-2">
+                  {canEdit && canEnter && (
+                    <Btn size="sm" onClick={() => setConfirmSubmit(true)}><Send className="h-3.5 w-3.5" /> Submit for review</Btn>
+                  )}
+                  {status === "submitted" && canApprove && (
+                    <>
+                      <Btn size="sm" variant="gold" onClick={doApprove}><CheckCheck className="h-3.5 w-3.5" /> Approve</Btn>
+                      <Btn size="sm" variant="dangerSoft" onClick={() => setReturnOpen(true)}><Undo2 className="h-3.5 w-3.5" /> Return for correction</Btn>
+                    </>
+                  )}
+                  {status === "approved" && canPublish && (
+                    <Btn size="sm" variant="solid" onClick={() => setConfirmPublish(true)}><Globe2 className="h-3.5 w-3.5" /> Publish results</Btn>
+                  )}
+                  {(status === "approved" || status === "published") && canApprove && (
+                    <Btn size="sm" variant="ghost" onClick={doReopen}><RotateCcw className="h-3.5 w-3.5" /> Reopen</Btn>
+                  )}
+                </div>
+                {!canEdit && (
+                  <p className="ml-auto flex items-center gap-1.5 text-[11.5px] font-semibold text-soft">
+                    <ShieldCheck className="h-3.5 w-3.5 text-pine-600" />
+                    {status === "submitted" ? "Locked — awaiting administrative review." : status === "approved" ? "Locked — approved, ready to publish." : status === "published" ? "Locked — published and visible to students & families." : "Locked."}
+                  </p>
+                )}
+                {canEdit && status === "returned" && submission?.returnReason && (
+                  <p className="ml-auto max-w-md truncate text-[11.5px] font-semibold text-rust-600" title={submission.returnReason}>↩ {submission.returnReason}</p>
+                )}
               </div>
 
               <div className="overflow-x-auto">
@@ -395,8 +521,9 @@ export function MarkEntryPage() {
                                 type="number" min={0} max={it.max}
                                 value={calc?.raw[it.id] ?? ""}
                                 placeholder="–"
+                                disabled={!canEdit}
                                 onChange={(e) => setScore(s.id, it, e.target.value)}
-                                className="tnum w-16 rounded-md border border-mist bg-card px-2 py-1.5 text-center font-mono text-[13px] font-semibold outline-none transition-all focus:border-pine-500 focus:ring-2 focus:ring-pine-500/25"
+                                className={`tnum w-16 rounded-md border border-mist bg-card px-2 py-1.5 text-center font-mono text-[13px] font-semibold outline-none transition-all focus:border-pine-500 focus:ring-2 focus:ring-pine-500/25 ${!canEdit ? "cursor-not-allowed bg-paper/60 text-soft" : ""}`}
                               />
                             </td>
                           ))}
@@ -417,8 +544,51 @@ export function MarkEntryPage() {
       )}
 
       {editStruct && <StructureModal existing={editStruct === "new" ? undefined : editStruct} onClose={() => setEditStruct(null)} />}
+
+      {structure && confirmSubmit && (
+        <Modal title="Submit marks for review" kicker={`${getSubject(db, structure.subjectId)?.name} · ${getClass(db, structure.classId)?.name} · ${structure.period}`} onClose={() => setConfirmSubmit(false)}
+          footer={<><Btn variant="ghost" onClick={() => setConfirmSubmit(false)}>Cancel</Btn><Btn onClick={doSubmit}><Send className="h-4 w-4" /> Submit</Btn></>}>
+          <p className="text-[13px] leading-relaxed text-ink">
+            You are about to submit marks for <strong>{getClass(db, structure.classId)?.name}</strong> — <strong>{getSubject(db, structure.subjectId)?.name}</strong> — <strong>{structure.period}</strong>.
+          </p>
+          <p className="mt-2 rounded-lg bg-paper px-3 py-2.5 text-[12.5px] leading-relaxed text-soft">
+            Once submitted, marks are locked and require administrative review before publication.
+            {canApprove && <span className="mt-1 block font-semibold text-pine-700">You hold the approve permission, so you may also approve this submission.</span>}
+          </p>
+        </Modal>
+      )}
+
+      {structure && returnOpen && (
+        <Modal title="Return for correction" kicker="A reason is required" onClose={() => setReturnOpen(false)}
+          footer={<><Btn variant="ghost" onClick={() => setReturnOpen(false)}>Cancel</Btn><Btn variant="danger" onClick={doReturn}><Undo2 className="h-4 w-4" /> Return marks</Btn></>}>
+          <Field label="Reason" required>
+            <TextArea value={returnReason} onChange={(e) => setReturnReason(e.target.value)} placeholder="e.g. Please verify Abebe's mark — the attendance register shows he was absent." />
+          </Field>
+          <p className="mt-2 text-[12px] text-soft">The teacher will be notified and can correct and resubmit.</p>
+        </Modal>
+      )}
+
+      {structure && confirmPublish && (
+        <Modal title="Publish results" kicker={`${getSubject(db, structure.subjectId)?.name} · ${getClass(db, structure.classId)?.name}`} onClose={() => setConfirmPublish(false)}
+          footer={<><Btn variant="ghost" onClick={() => setConfirmPublish(false)}>Cancel</Btn><Btn variant="gold" onClick={doPublish}><Globe2 className="h-4 w-4" /> Publish</Btn></>}>
+          <p className="text-[13px] leading-relaxed text-ink">Publishing makes these results visible to the students of <strong>{getClass(db, structure.classId)?.name}</strong> and their families.</p>
+          <p className="mt-2 rounded-lg bg-paper px-3 py-2.5 text-[12.5px] text-soft">This is recorded in the audit log. You can reopen later if a correction is needed.</p>
+        </Modal>
+      )}
     </div>
   );
+}
+
+function SubmissionChip({ status }: { status: ReturnType<typeof submissionStatus> }) {
+  const map: Record<string, { tone: "gray" | "gold" | "pine" | "steel" | "rust"; label: string }> = {
+    draft: { tone: "gray", label: "Draft" },
+    submitted: { tone: "steel", label: "Submitted · awaiting review" },
+    approved: { tone: "gold", label: "Approved" },
+    published: { tone: "pine", label: "Published" },
+    returned: { tone: "rust", label: "Returned for correction" },
+  };
+  const m = map[status] ?? map.draft;
+  return <Chip tone={m.tone}>{m.label}</Chip>;
 }
 
 function StructureModal({ existing, onClose }: { existing?: AssessmentStructure; onClose: () => void }) {
@@ -439,6 +609,15 @@ function StructureModal({ existing, onClose }: { existing?: AssessmentStructure;
   const weightSum = items.reduce((s, i) => s + (Number(i.weight) || 0), 0);
   const weightOk = Math.round(weightSum * 10) / 10 === 100;
   const setItem = (idx: number, patch: Partial<AssessmentItem>) => setItems((p) => p.map((x, j) => (j === idx ? { ...x, ...patch } : x)));
+
+  const PRESETS: { label: string; defs: [string, number, number][] }[] = [
+    { label: "3 Assessments + Final", defs: [["Assessment 1", 20, 20], ["Assessment 2", 20, 20], ["Assessment 3", 20, 20], ["Final Exam", 40, 40]] },
+    { label: "Quiz + Assignment + Midterm + Final", defs: [["Quiz 1", 10, 10], ["Assignment", 10, 10], ["Midterm", 30, 30], ["Final Exam", 50, 50]] },
+    { label: "Midterm + Final", defs: [["Midterm", 40, 40], ["Final Exam", 60, 60]] },
+    { label: "Continuous + Exam", defs: [["Assignment", 15, 15], ["Quiz 1", 15, 15], ["Project", 20, 20], ["Final Exam", 50, 50]] },
+  ];
+  const applyPreset = (defs: [string, number, number][]) =>
+    setItems(defs.map(([name, max, weight]) => ({ id: uid(), name, max, weight })));
 
   const save = () => {
     if (items.length === 0 || items.some((i) => !i.name.trim() || !(Number(i.max) > 0) || !(Number(i.weight) > 0))) {
@@ -481,6 +660,15 @@ function StructureModal({ existing, onClose }: { existing?: AssessmentStructure;
         </Field>
       </div>
       <div className="mt-4">
+        <p className="mb-2 text-[11.5px] font-bold uppercase tracking-[0.08em] text-soft">Start from a template</p>
+        <div className="mb-4 flex flex-wrap gap-1.5">
+          {PRESETS.map((p) => (
+            <button key={p.label} onClick={() => applyPreset(p.defs)}
+              className="cursor-pointer rounded-full border border-pine-200 bg-pine-50 px-3 py-1.5 text-[11px] font-bold text-pine-700 transition-all hover:border-pine-500 hover:bg-pine-100">
+              {p.label}
+            </button>
+          ))}
+        </div>
         <p className="mb-2 text-[11.5px] font-bold uppercase tracking-[0.08em] text-soft">Assessments — any names, max marks and weights</p>
         <div className="overflow-hidden rounded-lg border border-mist">
           <div className="grid grid-cols-[1fr_92px_92px_36px] items-center gap-2 border-b border-mist bg-paper/70 px-3 py-2">
@@ -676,12 +864,19 @@ export function ReportsPage() {
         ? me ?? undefined
         : kids.find((k) => k.id === pick) ?? kids[0];
 
-  const results = target ? studentResults(db, target) : [];
-  const avg = target ? studentAverage(db, target) : null;
+  const isStaff = role === "admin" || role === "teacher";
+  const allResults = target ? studentResults(db, target) : [];
+  /** Students & families only ever see published results; staff see every state. */
+  const results = isStaff ? allResults : allResults.filter((r) => isPublished(db, r.st.id));
+  const avgFrom = (list: typeof results) => {
+    const complete = list.filter((r) => r.calc.complete);
+    return complete.length ? +(complete.reduce((s, r) => s + r.calc.pct, 0) / complete.length).toFixed(1) : null;
+  };
+  const avg = target ? (isStaff ? studentAverage(db, target) : avgFrom(results)) : null;
 
   return (
     <div className="mx-auto max-w-5xl">
-      <PageHead kicker={role === "admin" ? "Reports" : "Grades"} title={role === "admin" ? "Student reports" : role === "student" ? "My grades" : "My child's grades"} sub="Weighted totals, percentages, grades and calculated positions — no manual numbers anywhere.">
+      <PageHead kicker={role === "admin" ? "Reports" : "Grades"} title={role === "admin" ? "Student reports" : role === "student" ? "My grades" : "My child's grades"} sub={isStaff ? "Weighted totals, percentages, grades and calculated positions — no manual numbers anywhere." : "Only results that have been approved and published by the school are shown here."}>
         {role === "admin" && (
           <Select value={target?.id ?? ""} onChange={(e) => setPick(e.target.value)} className="!w-56">
             {db.students.filter((s) => s.enrollment).map((s) => <option key={s.id} value={s.id}>{shortName(s)} · {sectionShort(db, s.enrollment!.classId, s.enrollment!.sectionId)}</option>)}
@@ -732,7 +927,7 @@ export function ReportsPage() {
                     </tr>
                   );
                 })}
-                {results.length === 0 && <tr><td colSpan={7} className="px-5 py-10 text-center text-[12.5px] text-soft">No assessment structures for this class yet.</td></tr>}
+                {results.length === 0 && <tr><td colSpan={7} className="px-5 py-10 text-center text-[12.5px] text-soft">{isStaff ? "No assessment structures for this class yet." : "No results have been published yet — check back once the school releases them."}</td></tr>}
               </tbody>
             </table>
           </div>

@@ -1,10 +1,10 @@
 import { useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
-  BadgeCheck, Baby, BookOpen, CalendarCheck2, FileBarChart2, History, Inbox, KeyRound, Layers, Lock,
+  BadgeCheck, Baby, BookOpen, CalendarCheck2, CreditCard, FileBarChart2, History, Inbox, KeyRound, Layers, Lock,
   FileText as Notebook, Pencil, Plus, Search, ShieldCheck, Trash2, User as UserIcon, Users, Wallet, Eye, GraduationCap, X,
 } from "lucide-react";
-import type { Role, Student, User, UserStatus } from "../types";
+import type { Enrollment, Role, Student, User, UserStatus } from "../types";
 import {
   assessmentCalc, attendanceStats, canSeeStudent, childrenOf, feeStats, fmtDate, fullName, getClass, getSection,
   getSubject, gradeFor, guardianOfStudent, homePathFor, ordinal, sectionLabel, sectionShort, shortName,
@@ -17,6 +17,7 @@ import {
 } from "../ui";
 import { AccessDenied } from "./Auth";
 import { defaultRoleIdFor, hasPermission, pushAudit } from "../rbac";
+import { IDCardModal, RegistrationWizard } from "./registration";
 
 /* ================= students directory (role-scoped) ================= */
 export function StudentsPage({ scoped }: { scoped?: boolean }) {
@@ -128,7 +129,7 @@ export function StudentsPage({ scoped }: { scoped?: boolean }) {
         )}
       </Panel>
 
-      {regOpen && <RegisterStudentModal onClose={() => setRegOpen(false)} onSaved={(id) => { setRegOpen(false); nav(`/admin/students/${id}`); }} />}
+      {regOpen && <RegistrationWizard onClose={() => setRegOpen(false)} onSaved={(id) => nav(`/admin/students/${id}`)} />}
     </div>
   );
 }
@@ -164,9 +165,10 @@ function RegisterStudentModal({ onClose, onSaved }: { onClose: () => void; onSav
         gender: f.gender, dob: f.dob, address: f.address.trim(),
         guardian: { father: f.gFather.trim() || "—", relation: "Father", phone: f.gPhone.trim(), address: f.address.trim() },
         admission: { number: `ADM-2026-${String(d.students.length + 1).padStart(3, "0")}`, date: f.admDate, previousSchool: f.prevSchool.trim(), type: "New Admission" },
-        enrollment: { yearId, classId: f.classId, sectionId: f.sectionId },
-        history: [{ yearId, classId: f.classId, sectionId: f.sectionId }],
+        enrollment: { yearId, classId: f.classId, sectionId: f.sectionId, status: "active", enrolledOn: f.admDate },
+        history: [{ yearId, classId: f.classId, sectionId: f.sectionId, status: "active", enrolledOn: f.admDate }],
         documents: [],
+        status: "active",
       });
       if (f.makeLogin) {
         d.users.push({
@@ -229,6 +231,7 @@ export function StudentProfilePage() {
   const { id } = useParams();
   const [tab, setTab] = useState("overview");
   const [editOpen, setEditOpen] = useState(false);
+  const [idCardOpen, setIdCardOpen] = useState(false);
 
   const s = db.students.find((x) => x.id === id);
   if (!s) return <AccessDenied required="A valid student id" reason="No student record matches that address." />;
@@ -272,11 +275,14 @@ export function StudentProfilePage() {
                 {!isAdmin && <Chip className="!border-pine-700 !bg-pine-800 !text-pine-200"><Lock className="h-3 w-3" /> Read-only for {currentUser?.role}</Chip>}
               </div>
             </div>
-            {isAdmin && (
-              <div className="ml-auto">
+            <div className="ml-auto flex gap-2">
+              {(isAdmin || isGuardian) && (
+                <Btn variant="soft" size="sm" onClick={() => setIdCardOpen(true)}><CreditCard className="h-3.5 w-3.5" /> ID card</Btn>
+              )}
+              {isAdmin && (
                 <Btn variant="gold" size="sm" onClick={() => setEditOpen(true)}><Pencil className="h-3.5 w-3.5" /> Edit</Btn>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         </div>
         <div className="grid grid-cols-2 gap-px bg-mist sm:grid-cols-4">
@@ -498,7 +504,8 @@ export function StudentProfilePage() {
         )}
       </div>
 
-      {editOpen && isAdmin && <EditStudentModal student={s} onClose={() => setEditOpen(false)} />}
+      {editOpen && isAdmin && <RegistrationWizard student={s} onClose={() => setEditOpen(false)} />}
+      {idCardOpen && <IDCardModal student={s} onClose={() => setIdCardOpen(false)} />}
     </div>
   );
 }
@@ -521,8 +528,9 @@ function EditStudentModal({ student, onClose }: { student: Student; onClose: () 
       const prev = st.enrollment;
       if (prev && (prev.classId !== f.classId || prev.sectionId !== f.sectionId)) {
         // rewrite the current year's history entry; earlier years stay untouched
-        st.enrollment = { yearId: prev.yearId, classId: f.classId, sectionId: f.sectionId };
-        st.history[st.history.length - 1] = st.enrollment;
+        const next: Enrollment = { yearId: prev.yearId, classId: f.classId, sectionId: f.sectionId, status: "active", enrolledOn: prev.enrolledOn };
+        st.enrollment = next;
+        st.history[st.history.length - 1] = next;
       }
     });
     toast("Student record updated.");

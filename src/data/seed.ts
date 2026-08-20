@@ -200,6 +200,7 @@ export function buildSeed(): DB {
       id,
       regId: `ST-2026-${pad3(i)}`,
       firstName, middleName, lastName, gender, dob,
+      status: "active",
       phone: `09${String(10000000 + Math.floor(rnd(i, 5) * 89999999)).slice(0, 8)}`,
       email: `${firstName}.${lastName}`.toLowerCase() + "@student.riverside.edu",
       address: addr,
@@ -216,8 +217,11 @@ export function buildSeed(): DB {
         previousSchool: ["Hope Primary School", "Bright Future Academy", "Riverside Primary School"][i % 3],
         type: i % 5 === 0 ? "Transfer" : "New Admission",
       },
-      enrollment: { yearId: "y26", classId, sectionId },
-      history: [...history, { yearId: "y26", classId, sectionId }],
+      enrollment: { yearId: "y26", classId, sectionId, rollNumber: (i % 40) + 1, status: "active", enrolledOn: addDays(-45) },
+      history: [
+        ...history.map((h) => ({ ...h, status: "transferred" as const })),
+        { yearId: "y26", classId, sectionId, rollNumber: (i % 40) + 1, status: "active" as const, enrolledOn: addDays(-45) },
+      ],
       documents: [
         { id: `${id}d1`, name: "Birth certificate.pdf", kind: "Birth certificate", size: `${120 + (i % 9) * 37} KB`, date: addDays(-(40 - (i % 9))) },
       ],
@@ -227,12 +231,12 @@ export function buildSeed(): DB {
 
   ROSTER_8B.forEach((row, idx) =>
     mkStudent(row, "c8", "sec8b", 8, [
-      { yearId: "y25", classId: "c7", sectionId: idx % 2 === 0 ? "sec7b" : "sec7a" },
+      { yearId: "y25", classId: "c7", sectionId: idx % 2 === 0 ? "sec7b" : "sec7a", status: "transferred", rollNumber: (idx % 40) + 1 },
     ])
   );
   ROSTER_8A.forEach((row, idx) =>
     mkStudent(row, "c8", "sec8a", 8, [
-      { yearId: "y25", classId: "c7", sectionId: idx % 2 === 0 ? "sec7a" : "sec7b" },
+      { yearId: "y25", classId: "c7", sectionId: idx % 2 === 0 ? "sec7a" : "sec7b", status: "transferred", rollNumber: (idx % 40) + 1 },
     ])
   );
   ROSTER_7A.forEach((row, idx) =>
@@ -444,6 +448,13 @@ export function buildSeed(): DB {
     attendance,
     fees,
     roles,
+    /* Example workflow states so the approval pipeline is visible on first load. */
+    submissions: [
+      { id: "sub-bio8", structureId: "as-bio8s1", status: "published", submittedBy: "u-t1", submittedAt: at(6, 15), approvedBy: "u-admin", approvedAt: at(5, 9), publishedBy: "u-admin", publishedAt: at(4, 10) },
+      { id: "sub-math8", structureId: "as-math8s1", status: "approved", submittedBy: "u-t1", submittedAt: at(3, 11), approvedBy: "u-admin", approvedAt: at(2, 9) },
+      { id: "sub-eng8", structureId: "as-eng8s1", status: "submitted", submittedBy: "u-t2", submittedAt: at(1, 14) },
+      { id: "sub-phy8", structureId: "as-phy8s1", status: "returned", submittedBy: "u-t2", submittedAt: at(2, 12), returnedBy: "u-admin", returnedAt: at(1, 9), returnReason: "Please verify Practical marks for Section B — two entries exceed the component maximum." },
+    ],
     announcements,
     conversations,
     messages,

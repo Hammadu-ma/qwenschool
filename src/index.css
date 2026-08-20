@@ -179,3 +179,37 @@ body {
     auto,
     auto;
 }
+
+/* ---------- ID card printing ---------- */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .idcard-sheet,
+  .idcard-sheet * {
+    visibility: visible;
+  }
+  .idcard-sheet {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12mm;
+    padding: 10mm;
+  }
+  .no-print {
+    display: none !important;
+  }
+}
+
+/* CR80 card proportions (85.6mm × 54mm) rendered on screen */
+.idcard {
+  width: 340px;
+  height: 214px;
+  border-radius: 14px;
+  overflow: hidden;
+  position: relative;
+  box-shadow: 0 8px 24px rgba(13, 33, 26, 0.25);
+}

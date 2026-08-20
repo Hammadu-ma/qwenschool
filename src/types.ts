@@ -96,10 +96,14 @@ export interface Assignment {
   teacherId: ID;
 }
 
+/** A student's placement for ONE academic year — the student record itself never changes. */
 export interface Enrollment {
   yearId: ID;
   classId: ID;
   sectionId: ID;
+  rollNumber?: number;
+  status: "active" | "transferred" | "withdrawn";
+  enrolledOn?: string;
 }
 
 export interface StudentDoc {
@@ -108,7 +112,11 @@ export interface StudentDoc {
   kind: string;
   size: string;
   date: string;
+  /** Small files keep their content so they can be opened in-app. */
+  dataUrl?: string;
 }
+
+export type StudentStatus = "active" | "transferred" | "withdrawn" | "graduated";
 
 export interface Student {
   id: ID;
@@ -118,6 +126,9 @@ export interface Student {
   lastName: string;
   gender: "Male" | "Female";
   dob: string;
+  status: StudentStatus;
+  /** Portrait (data URL) — printed on the student ID card. */
+  photo?: string;
   phone?: string;
   email?: string;
   address?: string;
@@ -177,6 +188,29 @@ export interface AssessmentStructure {
   subjectId: ID;
   period: string;
   items: AssessmentItem[];
+}
+
+/* ================= mark submission workflow =================
+   Marks flow: Draft → Submitted → (Approved | Returned) → Published.
+   Approval requires `results.manage`; publishing requires `results.publish`.
+   Both are grantable by the Super Admin, so a teacher granted either can
+   self-approve / self-publish. */
+export type SubmissionStatus = "draft" | "submitted" | "approved" | "published" | "returned";
+
+export interface Submission {
+  id: ID;
+  /** Assessment structure (subject + class + period) these marks belong to. */
+  structureId: ID;
+  status: SubmissionStatus;
+  submittedBy?: ID;
+  submittedAt?: string;
+  approvedBy?: ID;
+  approvedAt?: string;
+  publishedBy?: ID;
+  publishedAt?: string;
+  returnedBy?: ID;
+  returnedAt?: string;
+  returnReason?: string;
 }
 
 export interface GradeBand {
@@ -330,6 +364,8 @@ export interface DB {
   structures: AssessmentStructure[];
   /** assessmentMarks[structureId][studentId][itemId] = raw mark */
   assessmentMarks: Record<string, Record<string, Record<string, number>>>;
+  /** One workflow record per assessment structure (submit → approve → publish). */
+  submissions: Submission[];
   grading: GradeBand[];
   attendance: AttendanceRecord[];
   fees: FeeItem[];

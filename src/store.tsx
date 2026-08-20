@@ -141,6 +141,16 @@ export const feeStats = (db: DB, studentId: string) => {
   return { items, billed, paid, outstanding: billed - paid };
 };
 
+/* ================= mark submission workflow ================= */
+export const submissionFor = (db: DB, structureId: string) =>
+  db.submissions.find((s) => s.structureId === structureId);
+
+export const submissionStatus = (db: DB, structureId: string): "draft" | "submitted" | "approved" | "published" | "returned" =>
+  submissionFor(db, structureId)?.status ?? "draft";
+
+/** True once an assessment's marks are published — the only state students/families may see. */
+export const isPublished = (db: DB, structureId: string) => submissionStatus(db, structureId) === "published";
+
 /* =========================================================================
    AUTHORIZATION LAYER — pure functions. Every UI decision and every data
    query goes through these, so access control exists underneath the UI.
