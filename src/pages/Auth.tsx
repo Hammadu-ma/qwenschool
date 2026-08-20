@@ -6,6 +6,7 @@ import { Btn, Chip, RoleBadge } from "../ui";
 import type { Role } from "../types";
 
 const DEMO: { role: Role; label: string; name: string; username: string; password: string; icon: React.ReactNode; desc: string }[] = [
+  { role: "admin", label: "Super Admin", name: "Dr. Selam Bekele", username: "root", password: "root123", icon: <ShieldCheck className="h-4 w-4" />, desc: "Roles & permissions" },
   { role: "admin", label: "Administrator", name: "Amara Tesfaye", username: "admin", password: "admin123", icon: <KeyRound className="h-4 w-4" />, desc: "Full system control" },
   { role: "teacher", label: "Teacher", name: "Mr. Ahmed Yusuf", username: "ahmed", password: "teach123", icon: <BookOpen className="h-4 w-4" />, desc: "Assigned classes only" },
   { role: "student", label: "Student", name: "Abebe Kebede", username: "abebe", password: "stud123", icon: <Users className="h-4 w-4" />, desc: "Own records only" },
@@ -162,15 +163,19 @@ export function LoginPage() {
             <div className="grid grid-cols-2 gap-2">
               {DEMO.map((d, i) => (
                 <button
-                  key={d.role}
+                  key={d.username}
                   onClick={() => { setUsername(d.username); setPassword(d.password); doLogin(d.username, d.password); }}
                   disabled={busy}
-                  className="anim-rise group cursor-pointer rounded-xl border border-mist bg-card p-3 text-left transition-all duration-200 hover:-translate-y-0.5 hover:border-pine-400 hover:shadow-md disabled:opacity-50"
+                  className={`anim-rise group cursor-pointer rounded-xl border p-3 text-left transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md disabled:opacity-50 ${
+                    d.username === "root"
+                      ? "border-gold-400/70 bg-gold-100/50 hover:border-gold-500"
+                      : "border-mist bg-card hover:border-pine-400"
+                  }`}
                   style={{ animationDelay: `${i * 80}ms` }}
                 >
                   <span className="flex items-center justify-between">
-                    <span className="text-pine-700 transition-transform group-hover:scale-110">{d.icon}</span>
-                    <RoleBadge role={d.role} />
+                    <span className={d.username === "root" ? "text-gold-600 transition-transform group-hover:scale-110" : "text-pine-700 transition-transform group-hover:scale-110"}>{d.icon}</span>
+                    {d.username === "root" ? <Chip tone="gold">Super Admin</Chip> : <RoleBadge role={d.role} />}
                   </span>
                   <span className="mt-2 block text-[12.5px] font-bold text-ink">{d.name}</span>
                   <span className="block text-[10.5px] text-soft">{d.desc}</span>
