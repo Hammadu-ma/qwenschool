@@ -1,0 +1,390 @@
+import type {
+  AttendanceRecord,
+  AttendanceStatus,
+  DB,
+  Enrollment,
+  Student,
+  TimetableEntry,
+  User,
+} from "../types";
+
+export const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
+export const PERIODS = [
+  { period: 1, time: "08:00" },
+  { period: 2, time: "09:00" },
+  { period: 3, time: "10:30" },
+  { period: 4, time: "11:30" },
+  { period: 5, time: "13:30" },
+  { period: 6, time: "14:30" },
+];
+
+const iso = (d: Date) => d.toISOString().slice(0, 10);
+const addDays = (n: number) => {
+  const d = new Date();
+  d.setDate(d.getDate() + n);
+  return iso(d);
+};
+const at = (daysAgo: number, hour = 9, min = 20) => {
+  const d = new Date();
+  d.setDate(d.getDate() - daysAgo);
+  d.setHours(hour, min, 0, 0);
+  return d.toISOString();
+};
+const rnd = (i: number, salt: number) => {
+  const x = Math.sin(i * 127.1 + salt * 311.7) * 43758.5453;
+  return x - Math.floor(x);
+};
+const pad3 = (n: number) => String(n).padStart(3, "0");
+
+type RosterRow = [string, string, string, "Male" | "Female", number];
+
+const ROSTER_8B: RosterRow[] = [
+  ["Abebe", "Kebede", "Tesema", "Male", 0.87],
+  ["Hana", "Alemu", "Worku", "Female", 0.93],
+  ["Ahmed", "Mohammed", "Nuru", "Male", 0.8],
+  ["Sara", "Tesfay", "Gebre", "Female", 0.84],
+  ["Yohannes", "Girma", "Debebe", "Male", 0.76],
+  ["Lulit", "Mengistu", "Assefa", "Female", 0.9],
+  ["Bereket", "Tadesse", "Lemma", "Male", 0.71],
+  ["Selamawit", "Awate", "Berhe", "Female", 0.79],
+  ["Kalkidan", "Fikre", "Haile", "Female", 0.86],
+];
+const ROSTER_8A: RosterRow[] = [
+  ["Dawit", "Solomon", "Ayele", "Male", 0.82],
+  ["Mariam", "Haftu", "Kidane", "Female", 0.88],
+  ["Natnael", "Zerihun", "Getachew", "Male", 0.74],
+  ["Tigist", "Alemayehu", "Sisay", "Female", 0.91],
+  ["Robel", "Kassa", "Mulugeta", "Male", 0.69],
+  ["Betelhem", "Girma", "Tefera", "Female", 0.85],
+  ["Eyob", "Tesfaye", "Aragaw", "Male", 0.78],
+  ["Rahel", "Bekele", "Desta", "Female", 0.89],
+];
+const ROSTER_7A: RosterRow[] = [
+  ["Samuel", "Fikadu", "Gudeta", "Male", 0.81],
+  ["Hanna", "Demissie", "Belay", "Female", 0.87],
+  ["Yonas", "Kebede", "Endale", "Male", 0.75],
+  ["Feven", "Haile", "Mariam", "Female", 0.9],
+  ["Abel", "Tesfaye", "Wondimu", "Male", 0.72],
+  ["Lidya", "Mengistu", "Tafari", "Female", 0.83],
+];
+
+const ADDRESSES = [
+  "Kebena, Block 4, House 21",
+  "Piassa, near Post Office, House 12",
+  "Gotera, Condominium B-304",
+  "Merkato, Arada sub-city, House 88",
+  "Sarbet, House 45",
+  "Kazanchis, House 7",
+  "Bole, Woreda 03, House 19",
+  "Summit, Condominium A-118",
+];
+
+export function buildSeed(): DB {
+  /* ---------------- users: one credential set, four roles ---------------- */
+  const users: User[] = [
+    {
+      id: "u-admin", name: "Amara Tesfaye", username: "admin", password: "admin123",
+      role: "admin", status: "active", email: "admin@riverside.edu", phone: "0911 000 001",
+      createdAt: addDays(-400),
+    },
+    {
+      id: "u-t1", name: "Mr. Ahmed Yusuf", username: "ahmed", password: "teach123",
+      role: "teacher", status: "active", email: "ahmed.yusuf@riverside.edu", phone: "0911 234 501",
+      teacherId: "t1", createdAt: addDays(-320),
+    },
+    {
+      id: "u-t2", name: "Ms. Hana Girma", username: "hana.g", password: "teach123",
+      role: "teacher", status: "active", email: "hana.girma@riverside.edu", phone: "0911 234 502",
+      teacherId: "t2", createdAt: addDays(-320),
+    },
+    {
+      id: "u-s1", name: "Abebe Kebede", username: "abebe", password: "stud123",
+      role: "student", status: "active", email: "abebe@student.riverside.edu",
+      studentId: "st1", createdAt: addDays(-45),
+    },
+    {
+      id: "u-s2", name: "Hana Alemu", username: "hana.a", password: "stud123",
+      role: "student", status: "active", email: "hana@student.riverside.edu",
+      studentId: "st2", createdAt: addDays(-45),
+    },
+    {
+      id: "u-g1", name: "Kebede Tesema", username: "kebede", password: "fam123",
+      role: "guardian", status: "active", email: "kebede.t@mail.com", phone: "0911 555 210",
+      childrenIds: ["st1", "st2"], createdAt: addDays(-45),
+    },
+    {
+      id: "u-g2", name: "Almaz Worku", username: "almaz", password: "fam123",
+      role: "guardian", status: "active", email: "almaz.w@mail.com", phone: "0911 555 342",
+      childrenIds: ["st3"], createdAt: addDays(-40),
+    },
+    {
+      id: "u-t3", name: "Mr. Ali Omar", username: "ali", password: "teach123",
+      role: "teacher", status: "disabled", email: "ali.omar@riverside.edu",
+      teacherId: "t3", createdAt: addDays(-300),
+    },
+  ];
+
+  /* ---------------- academic years / classes / subjects ---------------- */
+  const years: DB["years"] = [
+    { id: "y25", name: "2025/26", start: "2025-09-15", end: "2026-07-03", active: false },
+    { id: "y26", name: "2026/27", start: "2026-09-14", end: "2027-07-02", active: true },
+  ];
+
+  const classes: DB["classes"] = [
+    { id: "c7", name: "Grade 7", level: 7, sections: [{ id: "sec7a", name: "A" }, { id: "sec7b", name: "B" }] },
+    {
+      id: "c8", name: "Grade 8", level: 8,
+      sections: [{ id: "sec8a", name: "A" }, { id: "sec8b", name: "B" }, { id: "sec8c", name: "C" }],
+    },
+  ];
+
+  const subjects: DB["subjects"] = [
+    { id: "math", name: "Mathematics", code: "MATH", color: "#2c654c" },
+    { id: "bio", name: "Biology", code: "BIO", color: "#557d3b" },
+    { id: "eng", name: "English", code: "ENG", color: "#b07e24" },
+    { id: "phy", name: "Physics", code: "PHY", color: "#3a6b8c" },
+    { id: "hist", name: "History", code: "HIS", color: "#96543f" },
+  ];
+
+  const teachers: DB["teachers"] = [
+    { id: "t1", name: "Mr. Ahmed Yusuf", phone: "0911 234 501", email: "ahmed.yusuf@riverside.edu", specialty: "Mathematics" },
+    { id: "t2", name: "Ms. Hana Girma", phone: "0911 234 502", email: "hana.girma@riverside.edu", specialty: "Biology" },
+    { id: "t3", name: "Mr. Ali Omar", phone: "0911 234 503", email: "ali.omar@riverside.edu", specialty: "English" },
+    { id: "t4", name: "Mrs. Selam Tesfaye", phone: "0911 234 504", email: "selam.tesfaye@riverside.edu", specialty: "Physics" },
+    { id: "t5", name: "Ms. Meron Alemu", phone: "0911 234 506", email: "meron.alemu@riverside.edu", specialty: "History" },
+    { id: "t6", name: "Mr. Samuel Tadesse", phone: "0911 234 507", email: "samuel.tadesse@riverside.edu", specialty: "Mathematics" },
+  ];
+
+  /* subject → teacher is the central relationship. Grade 8A Mathematics goes to
+     Mr. Samuel so that Mr. Ahmed's access is genuinely scoped to his own sections. */
+  const subjectTeacher: Record<string, string> = { math: "t1", bio: "t2", eng: "t3", phy: "t4", hist: "t5" };
+
+  const assignments: DB["assignments"] = [];
+  let aid = 0;
+  for (const [cid, secs] of [
+    ["c8", ["sec8a", "sec8b", "sec8c"]],
+    ["c7", ["sec7a"]],
+  ] as [string, string[]][]) {
+    for (const sec of secs) {
+      for (const s of subjects) {
+        const teacherId = s.id === "math" && cid === "c8" && sec === "sec8a" ? "t6" : subjectTeacher[s.id];
+        assignments.push({ id: `as${++aid}`, yearId: "y26", classId: cid, sectionId: sec, subjectId: s.id, teacherId });
+      }
+    }
+  }
+
+  /* ---------------- students ---------------- */
+  const students: Student[] = [];
+  const ability: Record<string, number> = {};
+  let n = 0;
+  const mkStudent = (row: RosterRow, classId: string, sectionId: string, grade: 7 | 8, history: Enrollment[]) => {
+    n += 1;
+    const i = n;
+    const [firstName, middleName, lastName, gender, ab] = row;
+    const id = `st${i}`;
+    const dobYear = grade === 8 ? 2013 : 2014;
+    const dob = `${dobYear}-${String(1 + Math.floor(rnd(i, 3) * 11)).padStart(2, "0")}-${String(1 + Math.floor(rnd(i, 4) * 27)).padStart(2, "0")}`;
+    const addr = ADDRESSES[i % ADDRESSES.length];
+    students.push({
+      id,
+      regId: `ST-2026-${pad3(i)}`,
+      firstName, middleName, lastName, gender, dob,
+      phone: `09${String(10000000 + Math.floor(rnd(i, 5) * 89999999)).slice(0, 8)}`,
+      email: `${firstName}.${lastName}`.toLowerCase() + "@student.riverside.edu",
+      address: addr,
+      guardian: {
+        father: `${["Kebede", "Alemu", "Mohammed", "Tesfay", "Girma", "Mengistu", "Tadesse", "Solomon"][i % 8]} ${lastName}`,
+        mother: `${["Almaz", "Tigist", "Fatuma", "Wudenesh", "Hirut", "Meskerem"][i % 6]} ${lastName}`,
+        relation: "Father",
+        phone: `09${String(20000000 + Math.floor(rnd(i, 6) * 79999999)).slice(0, 8)}`,
+        address: addr,
+      },
+      admission: {
+        number: `ADM-2026-${pad3(i)}`,
+        date: addDays(-(45 - (i % 9))),
+        previousSchool: ["Hope Primary School", "Bright Future Academy", "Riverside Primary School"][i % 3],
+        type: i % 5 === 0 ? "Transfer" : "New Admission",
+      },
+      enrollment: { yearId: "y26", classId, sectionId },
+      history: [...history, { yearId: "y26", classId, sectionId }],
+      documents: [
+        { id: `${id}d1`, name: "Birth certificate.pdf", kind: "Birth certificate", size: `${120 + (i % 9) * 37} KB`, date: addDays(-(40 - (i % 9))) },
+      ],
+    });
+    ability[id] = ab;
+  };
+
+  ROSTER_8B.forEach((row, idx) =>
+    mkStudent(row, "c8", "sec8b", 8, [
+      { yearId: "y25", classId: "c7", sectionId: idx % 2 === 0 ? "sec7b" : "sec7a" },
+    ])
+  );
+  ROSTER_8A.forEach((row, idx) =>
+    mkStudent(row, "c8", "sec8a", 8, [
+      { yearId: "y25", classId: "c7", sectionId: idx % 2 === 0 ? "sec7a" : "sec7b" },
+    ])
+  );
+  ROSTER_7A.forEach((row, idx) =>
+    mkStudent(row, "c7", "sec7a", 7, [])
+  );
+
+  /* ---------------- timetable ---------------- */
+  const timetable: TimetableEntry[] = [];
+  let tid = 0;
+  const subjArr = subjects.map((s) => s.id);
+  const fill = (classId: string, sectionId: string, days: number[]) => {
+    for (const day of days) {
+      for (let p = 0; p < 6; p++) {
+        timetable.push({
+          id: `tt${++tid}`, classId, sectionId, day, period: p + 1,
+          subjectId: subjArr[(day * 3 + p * 2 + (classId === "c8" ? 0 : 1)) % subjects.length],
+          room: `R-20${(day + p + (classId === "c8" ? 1 : 4)) % 10}`,
+        });
+      }
+    }
+  };
+  fill("c8", "sec8b", [0, 1, 2, 3, 4]);
+  fill("c8", "sec8a", [0, 2, 4]);
+  fill("c7", "sec7a", [1, 3]);
+
+  /* ---------------- homework ---------------- */
+  const homework: DB["homework"] = [
+    { id: "hw1", yearId: "y26", classId: "c8", sectionId: "sec8b", subjectId: "math", title: "Exercises 1–10, page 24", description: "Solve exercises 1–10 from the textbook. Show all working steps.", issued: addDays(-3), due: addDays(2), submitted: ["st1", "st2", "st3", "st5"] },
+    { id: "hw2", yearId: "y26", classId: "c8", sectionId: "sec8b", subjectId: "bio", title: "Lab report — onion cell slide", description: "One-page lab report with a labelled diagram.", issued: addDays(-2), due: addDays(4), submitted: ["st1", "st6"] },
+    { id: "hw3", yearId: "y26", classId: "c8", sectionId: "sec8b", subjectId: "eng", title: "Essay: My favourite season", description: "300 words, five adjectives, two similes.", issued: addDays(-6), due: addDays(-1), submitted: ["st1", "st2", "st4", "st7", "st9"] },
+    { id: "hw4", yearId: "y26", classId: "c8", sectionId: "sec8a", subjectId: "phy", title: "Speed & velocity — sheet 3", description: "Problems 1–8 with SI units.", issued: addDays(-1), due: addDays(6), submitted: [] },
+    { id: "hw5", yearId: "y26", classId: "c7", sectionId: "sec7a", subjectId: "math", title: "Fractions worksheet", description: "Complete the worksheet handed out in class.", issued: addDays(-2), due: addDays(3), submitted: ["st18"] },
+  ];
+
+  /* ---------------- assessment structures + marks ---------------- */
+  const structures: DB["structures"] = [];
+  const addStructure = (key: string, classId: string, subjectId: string, period: string, defs: [string, number, number][]) => {
+    structures.push({
+      id: `as-${key}`, yearId: "y26", classId, subjectId, period,
+      items: defs.map(([name, max, weight], i) => ({ id: `${key}-i${i + 1}`, name, max, weight })),
+    });
+  };
+  addStructure("bio8s1", "c8", "bio", "Semester 1", [
+    ["Assessment 1", 20, 20], ["Assessment 2", 20, 20], ["Assessment 3", 20, 20], ["Final Exam", 40, 40],
+  ]);
+  addStructure("math8s1", "c8", "math", "Semester 1", [
+    ["Quiz 1", 10, 10], ["Assignment", 10, 10], ["Midterm", 30, 30], ["Final Exam", 50, 50],
+  ]);
+  addStructure("eng8s1", "c8", "eng", "Semester 1", [
+    ["Listening", 20, 20], ["Assignment", 10, 10], ["Midterm", 30, 30], ["Final Exam", 40, 40],
+  ]);
+  addStructure("phy8s1", "c8", "phy", "Semester 1", [
+    ["Practical", 30, 30], ["Midterm", 30, 30], ["Final Exam", 40, 40],
+  ]);
+  addStructure("hist8s1", "c8", "hist", "Semester 1", [
+    ["Quiz 1", 10, 10], ["Assignment", 10, 10], ["Midterm", 30, 30], ["Final Exam", 50, 50],
+  ]);
+
+  const assessmentMarks: DB["assessmentMarks"] = {};
+  const genA = (key: string, classId: string, salt: number, skip: string[] = []) => {
+    const st = structures.find((x) => x.id === `as-${key}`)!;
+    const table: Record<string, Record<string, number>> = {};
+    students
+      .filter((s) => s.enrollment?.classId === classId)
+      .forEach((s, idx) => {
+        if (skip.includes(s.id)) return;
+        const row: Record<string, number> = {};
+        st.items.forEach((it, ci) => {
+          const jitter = (rnd(idx + 1, salt + ci * 17) - 0.5) * 0.18;
+          row[it.id] = Math.max(Math.round(it.max * 0.3), Math.min(it.max, Math.round(it.max * (ability[s.id] + jitter))));
+        });
+        table[s.id] = row;
+      });
+    assessmentMarks[st.id] = table;
+  };
+  genA("bio8s1", "c8", 71, ["st9"]);
+  assessmentMarks["as-bio8s1"]["st1"] = { "bio8s1-i1": 18, "bio8s1-i2": 17, "bio8s1-i3": 19, "bio8s1-i4": 35 };
+  assessmentMarks["as-bio8s1"]["st2"] = { "bio8s1-i1": 16, "bio8s1-i2": 18, "bio8s1-i3": 17, "bio8s1-i4": 32 };
+  assessmentMarks["as-bio8s1"]["st3"] = { "bio8s1-i1": 12, "bio8s1-i2": 14, "bio8s1-i3": 13, "bio8s1-i4": 25 };
+  genA("math8s1", "c8", 83);
+  genA("eng8s1", "c8", 97);
+  genA("phy8s1", "c8", 103);
+  genA("hist8s1", "c8", 131);
+
+  /* ---------------- attendance (past weekdays + today) ---------------- */
+  const attendance: AttendanceRecord[] = [];
+  const weekdays: string[] = [];
+  for (let back = 1; weekdays.length < 12; back++) {
+    const d = new Date();
+    d.setDate(d.getDate() - back);
+    const dow = d.getDay();
+    if (dow !== 0 && dow !== 6) weekdays.push(iso(d));
+  }
+  weekdays.push(addDays(0));
+  const sectionRosters: [string, string][] = [["c7", "sec7a"], ["c8", "sec8a"], ["c8", "sec8b"]];
+  const today = addDays(0);
+  weekdays.forEach((date, di) => {
+    sectionRosters.forEach(([classId, sectionId], ci) => {
+      if (date === today && classId === "c8") return; // 8A/8B register still open today
+      const list = students.filter((s) => s.enrollment?.classId === classId && s.enrollment?.sectionId === sectionId);
+      const mks: Record<string, AttendanceStatus> = {};
+      list.forEach((s, si) => {
+        const r = rnd(di * 31 + si * 7 + ci * 13, 53);
+        mks[s.id] = r < 0.055 ? "absent" : r < 0.1 ? "late" : "present";
+      });
+      attendance.push({ date, classId, sectionId, marks: mks });
+    });
+  });
+
+  /* ---------------- fees ---------------- */
+  const fees: DB["fees"] = [];
+  let fid = 0;
+  students.forEach((s, i) => {
+    fees.push(
+      { id: `fe${++fid}`, studentId: s.id, label: "Tuition — Term 1", amount: 4500, paid: i % 4 === 0 ? 2500 : 4500, due: addDays(-20) },
+      { id: `fe${++fid}`, studentId: s.id, label: "Laboratory & materials", amount: 350, paid: i % 3 === 0 ? 0 : 350, due: addDays(12) }
+    );
+  });
+
+  /* ---------------- notices ---------------- */
+  const notices: DB["notices"] = [
+    { id: "n1", title: "Water supply interruption — Friday 09:00–12:00", body: "Municipality maintenance on our line. Water off in blocks B and C Friday morning.\n\nCanteen serves a cold menu; practicals move to block A. Refill bottles before 09:00.", category: "Urgent", audience: { kind: "everyone" }, author: "Front Office", authorRole: "admin", at: at(0, 7, 45), pinned: true },
+    { id: "n2", title: "First Semester Midterm timetable released", body: "The midterm schedule is live. Check your grade's dates and duration per subject.\n\nArrive 15 minutes early with your student ID card.", category: "Exams", audience: { kind: "everyone" }, author: "Front Office", authorRole: "admin", at: at(2, 10), pinned: true },
+    { id: "n3", title: "Semester 1 assessment structures published", body: "Subject assessment structures for Semester 1 are configured in Mark Entry.\n\nTeachers: verify your subject's structure before entering marks.", category: "Academic", audience: { kind: "teachers" }, author: "Front Office", authorRole: "admin", at: at(4, 13), pinned: false },
+    { id: "n4", title: "Annual Sports Day — house registrations open", body: "Registrations for athletics, football and relay close next Wednesday.\n\nSign up with your PE teacher or class monitor.", category: "Event", audience: { kind: "students" }, author: "Mr. Ali Omar", authorRole: "teacher", at: at(3, 12), pinned: false },
+    { id: "n5", title: "PTA General Meeting — Saturday 9:00 AM", body: "All guardians invited to the main hall. Agenda: fee adjustment, examination calendar and the results workflow.", category: "Event", audience: { kind: "guardians" }, author: "Front Office", authorRole: "admin", at: at(5, 9), pinned: false },
+    { id: "n6", title: "Homework feedback policy — 48 hour rule", body: "Every piece of homework should be marked and returned with written feedback within 48 hours.\n\nUse the submission tracker for moderation evidence.", category: "Academic", audience: { kind: "teachers" }, author: "Ms. Hana Girma", authorRole: "teacher", at: at(6, 15), pinned: false },
+    { id: "n7", title: "Library hours extended during examination period", body: "Library open until 17:30 on weekdays and 09:00–13:00 Saturdays until midterm ends.", category: "General", audience: { kind: "everyone" }, author: "Front Office", authorRole: "admin", at: at(8, 11), pinned: false },
+  ];
+
+  /* ---------------- communication threads ---------------- */
+  const threads: DB["threads"] = [
+    { id: "th1", subject: "Biology lab — Thursday period swap (8A ↔ 8B)", read: false, createdBy: "u-t2", to: { kind: "teachers" }, messages: [ { id: "m1", fromName: "Ms. Hana Girma", fromRole: "teacher", body: "Can 8A and 8B swap Thursday lab periods? 8B has revision at 10:30.", at: at(0, 9, 10) } ] },
+    { id: "th2", subject: "Staff meeting — Thursday 3:30 PM, main hall", read: false, createdBy: "u-admin", to: { kind: "teachers" }, messages: [ { id: "m2", fromName: "Front Office", fromRole: "admin", body: "Agenda: midterm moderation, sports day duties, assessment structures. Please confirm.", at: at(1, 8, 5) }, { id: "m3", fromName: "Mr. Ahmed Yusuf", fromRole: "teacher", body: "Confirmed. Bringing Grade 8 Mathematics moderation samples.", at: at(1, 10, 40) } ] },
+    { id: "th3", subject: "Midterm revision pack — Grade 8B", read: true, createdBy: "u-t1", to: { kind: "section-guardians", classId: "c8", sectionId: "sec8b" }, messages: [ { id: "m4", fromName: "Mr. Ahmed Yusuf", fromRole: "teacher", body: "Guardians, the revision pack covers units 1–4. Ensure students finish the timed practice sheet before Friday.", at: at(2, 14, 30) } ] },
+    { id: "th4", subject: "Welcome to AY 2026/27", read: true, createdBy: "u-admin", to: { kind: "everyone" }, messages: [ { id: "m5", fromName: "Front Office", fromRole: "admin", body: "Welcome back! Registers open Monday 08:00. Timetables and assessment structures are live.", at: at(6, 9, 0) }, { id: "m6", fromName: "Ms. Meron Alemu", fromRole: "teacher", body: "Great start — the new mark entry workflow already saves us hours.", at: at(5, 11, 15) } ] },
+    { id: "th5", subject: "Sports day kit slips — Grade 8B", read: true, createdBy: "u-admin", to: { kind: "section-students", classId: "c8", sectionId: "sec8b" }, messages: [ { id: "m7", fromName: "Front Office", fromRole: "admin", body: "House colours posted on the notice board. Collect kit slips from the PE store by Wednesday.", at: at(3, 12, 45) } ] },
+  ];
+
+  return {
+    users,
+    years,
+    classes,
+    subjects,
+    teachers,
+    assignments,
+    students,
+    timetable,
+    homework,
+    structures,
+    assessmentMarks,
+    grading: [
+      { min: 90, max: 100, grade: "A+", remark: "Outstanding" },
+      { min: 80, max: 89.99, grade: "A", remark: "Excellent" },
+      { min: 70, max: 79.99, grade: "B", remark: "Very good" },
+      { min: 60, max: 69.99, grade: "C", remark: "Good" },
+      { min: 50, max: 59.99, grade: "D", remark: "Fair" },
+      { min: 0, max: 49.99, grade: "F", remark: "Needs improvement" },
+    ],
+    attendance,
+    fees,
+    notices,
+    threads,
+    settings: { schoolName: "Riverside Secondary School", motto: "Knowledge · Discipline · Service" },
+  };
+}

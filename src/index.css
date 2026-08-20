@@ -1,1 +1,181 @@
 @import "tailwindcss";
+
+@theme {
+  --font-display: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --color-paper: #eef1ea;
+  --color-card: #fbfcf9;
+  --color-ink: #1b2620;
+  --color-soft: #5d6b62;
+  --color-mist: #dde4d9;
+
+  --color-pine-50: #edf4ef;
+  --color-pine-100: #dce9e0;
+  --color-pine-200: #bcd6c6;
+  --color-pine-300: #93bba4;
+  --color-pine-400: #649a7e;
+  --color-pine-500: #407d60;
+  --color-pine-600: #2c654c;
+  --color-pine-700: #23523e;
+  --color-pine-800: #1d4334;
+  --color-pine-900: #16352a;
+  --color-pine-950: #0d211a;
+
+  --color-gold-100: #fdf1d6;
+  --color-gold-200: #fae2a5;
+  --color-gold-300: #f5cd6d;
+  --color-gold-400: #eeb73f;
+  --color-gold-500: #e2a21d;
+  --color-gold-600: #c4860f;
+  --color-gold-700: #9c690a;
+
+  --color-rust-100: #f9e3dd;
+  --color-rust-200: #f2c8be;
+  --color-rust-500: #c2503d;
+  --color-rust-600: #a63f2f;
+  --color-rust-700: #8a3325;
+
+  --color-steel-100: #e2eaf1;
+  --color-steel-500: #3a6b8c;
+  --color-steel-700: #2b516b;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  font-family: var(--font-body);
+  background-color: var(--color-paper);
+  background-image: radial-gradient(rgba(29, 67, 52, 0.07) 1px, transparent 1px);
+  background-size: 22px 22px;
+  color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+.font-display {
+  font-family: var(--font-display);
+}
+
+.tnum {
+  font-feature-settings: "tnum" 1;
+  font-variant-numeric: tabular-nums;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(29, 67, 52, 0.35) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgba(29, 67, 52, 0.28);
+  border-radius: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.96) translateY(8px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+@keyframes shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  20% {
+    transform: translateX(-7px);
+  }
+  40% {
+    transform: translateX(6px);
+  }
+  60% {
+    transform: translateX(-4px);
+  }
+  80% {
+    transform: translateX(3px);
+  }
+}
+@keyframes tickpulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+@keyframes barfill {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+.anim-rise {
+  animation: rise 0.45s cubic-bezier(0.22, 0.9, 0.3, 1) both;
+}
+.anim-pop {
+  animation: pop 0.32s cubic-bezier(0.22, 0.9, 0.3, 1) both;
+}
+.anim-toast {
+  animation: toast-in 0.3s cubic-bezier(0.22, 0.9, 0.3, 1) both;
+}
+.anim-shake {
+  animation: shake 0.4s ease both;
+}
+.anim-bar {
+  transform-origin: left;
+  animation: barfill 0.9s cubic-bezier(0.22, 0.9, 0.3, 1) both;
+}
+.live-dot {
+  animation: tickpulse 2s ease-in-out infinite;
+}
+
+/* layered ambient background for auth + dashboard hero */
+.auth-panel {
+  background-color: var(--color-pine-950);
+  background-image:
+    radial-gradient(rgba(238, 183, 63, 0.08) 1px, transparent 1px),
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.02) 0 2px, transparent 2px 5px),
+    linear-gradient(160deg, #0d211a 0%, #16352a 55%, #1d4334 100%);
+  background-size:
+    26px 26px,
+    auto,
+    auto;
+}
