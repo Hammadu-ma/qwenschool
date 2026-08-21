@@ -1,9 +1,11 @@
 import { useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
-import { GraduationCap, Lock, LogIn, ShieldAlert, ShieldCheck, Eye, EyeOff, ArrowLeft, Loader2, Users, Baby, BookOpen, KeyRound } from "lucide-react";
+import { GraduationCap, Lock, LogIn, ShieldAlert, ShieldCheck, Eye, EyeOff, ArrowLeft, Loader2, Users, Baby, BookOpen, KeyRound, Database, TerminalSquare, CheckCircle2, XCircle, Copy, ExternalLink, RefreshCw, Zap } from "lucide-react";
 import { homePathFor, useApp } from "../store";
 import { Btn, Chip, RoleBadge } from "../ui";
 import type { Role } from "../types";
+import { applyMigrations } from "../lib/backend";
+import { MIGRATIONS, sqlEditorUrl, PROJECT_REF } from "../lib/migrations";
 
 const DEMO: { role: Role; label: string; name: string; username: string; password: string; icon: React.ReactNode; desc: string }[] = [
   { role: "admin", label: "Super Admin", name: "Dr. Selam Bekele", username: "root", password: "root123", icon: <ShieldCheck className="h-4 w-4" />, desc: "Roles & permissions" },
@@ -13,9 +15,162 @@ const DEMO: { role: Role; label: string; name: string; username: string; passwor
   { role: "guardian", label: "Guardian", name: "Kebede Tesema", username: "kebede", password: "fam123", icon: <Baby className="h-4 w-4" />, desc: "2 registered children" },
 ];
 
+type StepState = "idle" | "run" | "ok" | "fail";
+
+/**
+ * Commissioning console — shown while the Supabase project is reachable but
+ * the migrations haven't been applied yet. Two paths:
+ *   A. Paste the service_role key (memory only, never stored) and let the
+ *      browser apply all four migrations via the Management API.
+ *   B. Guided: copy each file into the SQL Editor.
+ * Either way, "Re-check & connect" re-hydrates and flips the app to live mode.
+ */
+function SetupConsole({ onConnected }: { onConnected: () => void }) {
+  const { reconnect, toast } = useApp();
+  const [open, setOpen] = useState(true);
+  const [path, setPath] = useState<"auto" | "guided">("auto");
+  const [key, setKey] = useState("");
+  const [showKey, setShowKey] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [steps, setSteps] = useState<Record<string, StepState>>({});
+  const [notice, setNotice] = useState<{ tone: "ok" | "warn"; text: string } | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
+
+  const mark = (file: string, s: StepState) => setSteps((p) => ({ ...p, [file]: s }));
+
+  const runAuto = async () => {
+    if (!key.trim()) { setNotice({ tone: "warn", text: "Paste your service_role key first (it stays in this tab's memory only)." }); return; }
+    setBusy(true); setNotice(null); setSteps({});
+    const ok = await applyMigrations(key.trim(), MIGRATIONS, (file, state) => mark(file, state));
+    setBusy(false);
+    if (ok) {
+      setNotice({ tone: "ok", text: "All migrations applied. Re-checking the connection…" });
+      await recheck();
+    }
+  };
+
+  const recheck = async () => {
+    setChecking(true);
+    const res = await reconnect();
+    setChecking(false);
+    if (res === "live") {
+      toast("Connected to Supabase — live mode.", "ok");
+      onConnected();
+    } else {
+      setNotice({ tone: "warn", text: "Schema still not detected. If you just applied the migrations, wait a moment and re-check, or use the guided path." });
+    }
+  };
+
+  const copy = async (file: string, sql: string) => {
+    try { await navigator.clipboard.writeText(sql); setCopied(file); setTimeout(() => setCopied(null), 1600); }
+    catch { setNotice({ tone: "warn", text: "Clipboard blocked — select the file in supabase/migrations and copy manually." }); }
+  };
+
+  const done = MIGRATIONS.filter((m) => steps[m.file] === "ok").length;
+
+  return (
+    <div className="anim-rise mb-6 overflow-hidden rounded-xl border border-pine-800 bg-pine-950 text-pine-100 shadow-lg">
+      <button onClick={() => setOpen((v) => !v)} className="flex w-full cursor-pointer items-center gap-3 px-5 py-4 text-left transition-colors hover:bg-pine-900/60">
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-gold-400/15 text-gold-400"><Database className="h-4.5 w-4.5" /></span>
+        <span className="flex-1">
+          <span className="flex items-center gap-2 font-display text-[15px] font-extrabold tracking-tight text-white">Connect the live database</span>
+          <span className="mt-0.5 block text-[11.5px] text-pine-300">Project <span className="font-mono text-gold-300">{PROJECT_REF}</span> is reachable — apply the schema to enable real sign-in and persistence.</span>
+        </span>
+        <span className="live-dot h-2.5 w-2.5 shrink-0 rounded-full bg-gold-400" />
+      </button>
+
+      {open && (
+        <div className="border-t border-pine-800/70 px-5 py-4">
+          {/* path switcher */}
+          <div className="flex gap-1.5">
+            {([["auto", "Automatic", Zap], ["guided", "Guided (SQL Editor)", TerminalSquare]] as const).map(([id, label, Icon]) => (
+              <button key={id} onClick={() => setPath(id)}
+                className={`flex cursor-pointer items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-bold transition-all ${path === id ? "bg-gold-400 text-pine-950" : "bg-pine-900 text-pine-300 hover:text-white"}`}>
+                <Icon className="h-3.5 w-3.5" /> {label}
+              </button>
+            ))}
+          </div>
+
+          {path === "auto" ? (
+            <div className="mt-4 space-y-3">
+              <div>
+                <label className="mb-1.5 block text-[10.5px] font-bold uppercase tracking-[0.14em] text-pine-400">Service role key · never stored, never bundled</label>
+                <div className="relative">
+                  <input
+                    type={showKey ? "text" : "password"}
+                    value={key}
+                    onChange={(e) => setKey(e.target.value)}
+                    placeholder="eyJhbGciOi…  (service_role)"
+                    className="w-full rounded-lg border border-pine-700 bg-pine-900/70 px-3.5 py-2.5 pr-11 font-mono text-[12px] text-pine-100 placeholder:text-pine-500 outline-none transition-all focus:border-gold-400 focus:ring-2 focus:ring-gold-400/20"
+                  />
+                  <button type="button" onClick={() => setShowKey((v) => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 cursor-pointer text-pine-400 hover:text-white" aria-label="Toggle key visibility">
+                    {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
+                <p className="mt-1.5 text-[10.5px] leading-relaxed text-pine-400">Runs entirely in your browser via the Supabase Management API. The key is held in memory for this tab only and is discarded on reload.</p>
+              </div>
+              <Btn variant="gold" onClick={runAuto} disabled={busy} className="w-full">
+                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
+                {busy ? `Applying… ${done}/${MIGRATIONS.length}` : "Apply 4 migrations"}
+              </Btn>
+            </div>
+          ) : (
+            <div className="mt-4 space-y-2">
+              <p className="text-[11.5px] leading-relaxed text-pine-300">Open the <a href={sqlEditorUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-bold text-gold-300 underline-offset-2 hover:underline">SQL Editor <ExternalLink className="h-3 w-3" /></a> and paste each file in order, running one at a time:</p>
+              {MIGRATIONS.map((m, i) => (
+                <div key={m.file} className="flex items-center gap-2.5 rounded-lg border border-pine-800 bg-pine-900/50 px-3 py-2">
+                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-pine-800 font-mono text-[10px] font-bold text-gold-300">{i + 1}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-mono text-[11.5px] font-semibold text-white">{m.file}</span>
+                    <span className="block truncate text-[10px] text-pine-400">{m.title}</span>
+                  </span>
+                  <button onClick={() => copy(m.file, m.sql)} className="flex shrink-0 cursor-pointer items-center gap-1 rounded-md bg-pine-800 px-2 py-1.5 text-[11px] font-bold text-pine-100 transition-colors hover:bg-pine-700">
+                    {copied === m.file ? <CheckCircle2 className="h-3.5 w-3.5 text-gold-400" /> : <Copy className="h-3.5 w-3.5" />}
+                    {copied === m.file ? "Copied" : "Copy"}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* progress log */}
+          {Object.keys(steps).length > 0 && (
+            <div className="mt-4 space-y-1 rounded-lg border border-pine-800 bg-black/30 p-3 font-mono text-[11px]">
+              {MIGRATIONS.filter((m) => steps[m.file]).map((m) => (
+                <div key={m.file} className="flex items-center gap-2">
+                  {steps[m.file] === "run" && <Loader2 className="h-3.5 w-3.5 animate-spin text-gold-400" />}
+                  {steps[m.file] === "ok" && <CheckCircle2 className="h-3.5 w-3.5 text-pine-400" />}
+                  {steps[m.file] === "fail" && <XCircle className="h-3.5 w-3.5 text-rust-500" />}
+                  <span className={steps[m.file] === "ok" ? "text-pine-300" : steps[m.file] === "fail" ? "text-rust-400" : "text-pine-400"}>{m.file}</span>
+                  {steps[m.file] === "ok" && <span className="text-pine-500">applied</span>}
+                  {steps[m.file] === "fail" && <span className="text-rust-400">failed</span>}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {notice && (
+            <div className={`mt-3 rounded-lg px-3.5 py-2.5 text-[12px] font-semibold ${notice.tone === "ok" ? "bg-pine-800/70 text-pine-100" : "bg-gold-400/10 text-gold-300"}`}>{notice.text}</div>
+          )}
+
+          <div className="mt-4 flex items-center gap-2 border-t border-pine-800/70 pt-3.5">
+            <Btn variant="outline" onClick={recheck} disabled={checking} className="!border-pine-700 !bg-transparent !text-pine-200 hover:!bg-pine-900">
+              {checking ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              {checking ? "Checking…" : "Re-check & connect"}
+            </Btn>
+            <span className="text-[10.5px] text-pine-400">Until connected, you're in local demo mode — sign-in still works below.</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function LoginPage() {
-  const { db, login, toast } = useApp();
+  const { db, login, toast, mode } = useApp();
   const nav = useNavigate();
+  const [connected, setConnected] = useState(false);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [showPw, setShowPw] = useState(false);
@@ -115,6 +270,8 @@ export function LoginPage() {
           <p className="text-[10.5px] font-bold uppercase tracking-[0.2em] text-gold-600">Sign in</p>
           <h2 className="font-display mt-1 text-[28px] font-extrabold tracking-tight text-ink">Who's signing in today?</h2>
           <p className="mt-1 text-[13px] text-soft">Your role and relationships load automatically after authentication.</p>
+
+          {mode !== "live" && !connected && <div className="mt-5"><SetupConsole onConnected={() => setConnected(true)} /></div>}
 
           <form key={shake} onSubmit={submit} className={`mt-6 space-y-4 ${shake ? "anim-shake" : ""}`}>
             <div>

@@ -4,7 +4,7 @@ import type {
 } from "./types";
 import { buildSeed } from "./data/seed";
 import { supabase, isSupabaseConfigured, usernameToEmail } from "./lib/supabase";
-import { hydrate, sync, setProfileId, loadProfileForSession } from "./lib/backend";
+import { hydrate, sync, setProfileId, loadProfileForSession, type DbMode } from "./lib/backend";
 
 export const uid = () => Math.random().toString(36).slice(2, 10);
 export const todayISO = () => new Date().toISOString().slice(0, 10);
@@ -289,8 +289,12 @@ interface Ctx {
   ui: { toast: Toast | null };
   dismissToast: () => void;
   ready: boolean;
-  /** True when data is coming from the live Supabase project. */
-  remote: boolean;
+  /** live = real Supabase data · local = in-memory seed · off = client unconfigured */
+  mode: DbMode;
+  /** True when the project is reachable but the migrations haven't been applied yet. */
+  schemaMissing: boolean;
+  /** Re-probe the database and re-hydrate (after migrations are applied). */
+  reconnect: () => Promise<DbMode | "missing">;
 }
 
 const AppCtx = createContext<Ctx | null>(null);
@@ -298,7 +302,8 @@ const AppCtx = createContext<Ctx | null>(null);
 export function AppProvider({ children }: { children: ReactNode }) {
   const [db, setDb] = useState<DB>(() => buildSeed());
   const [ready, setReady] = useState(false);
-  const [remote, setRemote] = useState(false);
+  const [mode, setMode] = useState<DbMode>("off");
+  const [schemaMissing, setSchemaMissing] = useState(false);
   const [sessionUserId, setSessionUserId] = useState<string | null>(null);
   const [yearId, setYearId] = useState("");
   const [toastState, setToastState] = useState<Toast | null>(null);
@@ -308,13 +313,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let mounted = true;
     (async () => {
-      const { db: loaded, remote: isRemote } = await hydrate();
+      const { db: loaded, mode: m, schemaMissing: missing } = await hydrate();
       if (!mounted) return;
       dbRef.current = loaded;
       setDb(loaded);
-      setRemote(isRemote);
+      setMode(m);
+      setSchemaMissing(missing);
       setYearId(loaded.years.find((y) => y.active)?.id ?? loaded.years[0]?.id ?? "");
-      if (isSupabaseConfigured && supabase) {
+      if (m === "live" && isSupabaseConfigured && supabase) {
         const { data } = await supabase.auth.getSession();
         const uid = data.session?.user?.id ?? null;
         if (uid) { setSessionUserId(uid); setProfileId(uid); }
@@ -328,6 +334,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
     })();
     return () => { mounted = false; };
   }, []);
+
+  /** Re-probe and re-hydrate — used by the setup console after migrations land. */
+  const reconnect = async (): Promise<DbMode | "missing"> => {
+    const { db: loaded, mode: m, schemaMissing: missing } = await hydrate();
+    dbRef.current = loaded;
+    setDb(loaded);
+    setMode(m);
+    setSchemaMissing(missing);
+    setYearId(loaded.years.find((y) => y.active)?.id ?? loaded.years[0]?.id ?? "");
+    if (m !== "live") { setSessionUserId(null); setProfileId(null); }
+    return missing ? "missing" : m;
+  };
 
   const currentUser = useMemo(() => {
     const u = getUser(db, sessionUserId);
@@ -347,17 +365,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, sessionUserId, db]);
 
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
+
   const update = (fn: (d: DB) => void) => {
     const prev = dbRef.current;
     const draft = structuredClone(prev);
     fn(draft);
     dbRef.current = draft;
     setDb(draft);
-    sync(prev, draft); // persisted to PostgreSQL; RLS decides what actually lands
+    if (modeRef.current === "live") sync(prev, draft); // PostgreSQL; RLS decides what lands
   };
 
   const login = async (username: string, password: string): Promise<{ ok: boolean; error?: string; user?: User }> => {
-    if (!isSupabaseConfigured || !supabase) return { ok: false, error: "Supabase is not configured — add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY." };
+    /* Local demo mode (schema not yet applied / offline): authenticate against the
+       in-memory seed so the product stays fully usable while the DB is provisioned. */
+    if (mode !== "live" || !supabase) {
+      const u = db.users.find((x) => x.username.toLowerCase() === username.trim().toLowerCase());
+      if (!u) return { ok: false, error: "No account found with that username." };
+      if (u.password !== password) return { ok: false, error: "Incorrect password. Try again." };
+      if (u.status !== "active") return { ok: false, error: "This account has been disabled. Contact the administrator." };
+      setSessionUserId(u.id);
+      return { ok: true, user: u };
+    }
     const { data, error } = await supabase.auth.signInWithPassword({ email: usernameToEmail(username), password });
     if (error || !data.user) return { ok: false, error: error?.message === "Invalid login credentials" ? "Incorrect username or password." : error?.message ?? "Sign-in failed." };
     const id = data.user.id;
@@ -382,7 +412,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const dismissToast = () => setToastState(null);
 
   const resetData = () => {
-    if (!remote) {
+    if (mode !== "live") {
       const fresh = buildSeed();
       dbRef.current = fresh;
       setDb(fresh);
@@ -398,7 +428,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     yearId, setYear: setYearId,
     sessionUserId, currentUser, login, logout,
     toast, ui: { toast: toastState }, dismissToast,
-    ready, remote,
+    ready, mode, schemaMissing, reconnect,
   };
 
   if (!ready) {

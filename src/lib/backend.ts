@@ -1,4 +1,5 @@
 import { supabase, isSupabaseConfigured } from "./supabase";
+import { PROJECT_REF } from "./migrations";
 import { buildSeed } from "../data/seed";
 import type {
   DB, User, Student, Enrollment, StudentDoc, AssessmentStructure, AssessmentItem, AttendanceRecord,
@@ -24,8 +25,64 @@ import type {
  *    short text ids — the schema uses text PKs for exactly this reason.
  */
 
-const SCHOOL_ID = "sch1";
+const SCHOOL_ID = "school-1";
 const sb = () => supabase;
+
+export type DbMode = "live" | "local" | "off";
+
+/**
+ * Probe the remote schema without writing anything. Distinguishes:
+ *   live    — tables exist (data may be empty)
+ *   missing — reachable project, migrations not applied (PGRST205 / 42P01)
+ *   off     — client not configured
+ */
+export async function checkSchema(): Promise<DbMode | "missing"> {
+  if (!isSupabaseConfigured) return "off";
+  const { error } = await sb()!.from("schools").select("id").limit(1);
+  if (!error) return "live";
+  const code = (error as { code?: string }).code ?? "";
+  const msg = error.message ?? "";
+  if (code === "PGRST205" || code === "42P01" || /does not exist|Could not find the table/i.test(msg)) return "missing";
+  console.warn("[backend] schema probe failed:", msg);
+  return "missing";
+}
+
+/**
+ * Apply the bundled migrations through the Supabase Management API.
+ * The service key is supplied at runtime by the operator, lives only in
+ * browser memory, and is never persisted or bundled. If the browser blocks
+ * the call (CORS), the console falls back to the guided SQL-Editor path.
+ */
+export async function applyMigrations(
+  serviceKey: string,
+  files: { file: string; sql: string }[],
+  onStep: (file: string, state: "run" | "ok" | "fail", detail?: string) => void
+): Promise<boolean> {
+  const endpoint = `https://api.supabase.com/v1/projects/${PROJECT_REF}/database/query`;
+  for (const m of files) {
+    onStep(m.file, "run");
+    try {
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${serviceKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ query: m.sql }),
+      });
+      const text = await res.text();
+      let body: any = {};
+      try { body = text ? JSON.parse(text) : {}; } catch { body = { error: text }; }
+      if (!res.ok || body?.error) {
+        const detail = body?.error ?? body?.message ?? `HTTP ${res.status}`;
+        onStep(m.file, "fail", String(detail).slice(0, 160));
+        return false;
+      }
+      onStep(m.file, "ok");
+    } catch {
+      onStep(m.file, "fail", "Browser blocked the direct API call — use the guided SQL Editor path below.");
+      return false;
+    }
+  }
+  return true;
+}
 
 /* =========================================================================
    hydrate — Supabase → DB shape
@@ -41,9 +98,11 @@ async function sel<T = any>(table: string, select = "*"): Promise<T[] | null> {
   return (data as T[]) ?? [];
 }
 
-export async function hydrate(): Promise<{ db: DB; remote: boolean }> {
+export async function hydrate(): Promise<{ db: DB; mode: DbMode; schemaMissing: boolean }> {
   const seed = buildSeed();
-  if (!isSupabaseConfigured) return { db: seed, remote: false };
+  const probe = await checkSchema();
+  if (probe === "off") return { db: seed, mode: "off", schemaMissing: false };
+  if (probe === "missing") return { db: seed, mode: "local", schemaMissing: true };
 
   // Parallel reads; any table that fails (e.g. migration not yet applied)
   // falls back to the seed so the UI still renders — loudly, not silently.
@@ -208,7 +267,7 @@ export async function hydrate(): Promise<{ db: DB; remote: boolean }> {
     id: a.id, userId: a.actor_id, userName: a.actor_name, action: a.action, target: a.target, detail: a.detail, at: a.at,
   })) as AuditEntry[];
 
-  return { db, remote };
+  return { db, mode: remote ? "live" : "local", schemaMissing: false };
 }
 
 function termName(termId: string | null | undefined): string {

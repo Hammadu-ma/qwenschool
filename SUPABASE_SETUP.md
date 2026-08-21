@@ -19,14 +19,24 @@ All schema, RLS, functions and seed data live in `supabase/migrations/`:
 | `0003_seed_core.sql` | School, years, classes/sections, subjects, teachers, students, enrollments, roles, **auth users** |
 | `0004_seed_academics.sql` | Assessment structures, marks, submissions, attendance, fees, timetable, homework, communication |
 
-**Option A — Supabase CLI** (recommended):
+**Option A — In-app console (fastest).** Until the schema exists, the login page shows a
+"Connect the live database" panel:
+
+1. **Automatic** — paste your **service_role key** (memory only, never stored or bundled) and
+   click *Apply 4 migrations*. The browser POSTs each file to the Supabase Management API and
+   shows per-file progress.
+2. **Re-check & connect** — the app re-probes, hydrates from PostgreSQL and flips to live mode.
+
+If the browser blocks the direct call, use the **Guided** tab to copy each file into the SQL Editor.
+
+**Option B — Supabase CLI:**
 ```bash
 supabase login
 supabase link --project-ref nrahbfmajwdgphmdllgm
 supabase db push
 ```
 
-**Option B — Dashboard:** open *SQL Editor* and run the four files **in order** (0001 → 0004).
+**Option C — Dashboard:** open *SQL Editor* and run the four files **in order** (0001 → 0004).
 
 The migrations are idempotent (`if not exists` / `on conflict do nothing`) and never drop data.
 They run as the `postgres` role, which is what lets `0003` create real `auth.users` rows.
