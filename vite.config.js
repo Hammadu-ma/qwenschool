@@ -8,8 +8,17 @@ export default defineConfig({
     host: "0.0.0.0",
     port: 3000,
     strictPort: true,
-    hmr: {
-      port: 3000,
+    // The preview proxy cannot upgrade WebSocket connections, so the HMR
+    // client would throw "WebSocket closed without opened" on every load.
+    // Disable it — the app serves fine without hot reload in this sandbox.
+    hmr: false,
+    watch: {
+      usePolling: false,
     },
+  },
+  preview: {
+    host: "0.0.0.0",
+    port: 3000,
+    strictPort: true,
   },
 });
