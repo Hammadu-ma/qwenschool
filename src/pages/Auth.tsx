@@ -23,20 +23,23 @@ export function LoginPage() {
   const [busy, setBusy] = useState(false);
   const [shake, setShake] = useState(0);
 
-  const doLogin = (u: string, p: string) => {
+  const doLogin = async (u: string, p: string) => {
     setBusy(true);
     setError(null);
-    setTimeout(() => {
-      const res = login(u, p);
-      setBusy(false);
-      if (!res.ok || !res.user) {
+    try {
+      const res = await login(u, p);
+      if (!res.ok) {
         setError(res.error ?? "Sign-in failed.");
         setShake((s) => s + 1);
         return;
       }
-      toast(`Welcome back, ${res.user.name.split(" ")[0]} — signed in as ${res.user.role}.`);
-      nav(homePathFor(res.user.role), { replace: true });
-    }, 550);
+      if (res.user) {
+        toast(`Welcome back, ${res.user.name.split(" ")[0]} — signed in as ${res.user.role}.`);
+        nav(homePathFor(res.user.role), { replace: true });
+      }
+    } finally {
+      setBusy(false);
+    }
   };
 
   const submit = (e: FormEvent) => {

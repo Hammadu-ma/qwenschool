@@ -1,5 +1,29 @@
+# dependencies
 node_modules/
-.next/
+
+# build output
 dist/
+
+# editor / OS
+.DS_Store
+*.local
+
+# environment — keep secrets out of version control.
+# `.env` here only ever contains the PUBLIC anon key, but we ignore it to be safe;
+# `.env.example` is the committed reference.
+.env
+.env.local
+.env.*.local
+
+# local-only Supabase bootstrap (uses the service_role key — NEVER commit)
+scripts/bootstrap.mjs
+supabase/.env
+supabase/.temp/
+
+# logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.next/
 build/
 *.log

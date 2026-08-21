@@ -1,11 +1,10 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type {
   AssessmentStructure, Audience, DB, Role, Student, User,
 } from "./types";
 import { buildSeed } from "./data/seed";
-
-const DB_KEY = "riverside.db.v3";
-const SESSION_KEY = "riverside.session.v3";
+import { supabase, isSupabaseConfigured, usernameToEmail } from "./lib/supabase";
+import { hydrate, sync, setProfileId, loadProfileForSession } from "./lib/backend";
 
 export const uid = () => Math.random().toString(36).slice(2, 10);
 export const todayISO = () => new Date().toISOString().slice(0, 10);
@@ -284,112 +283,137 @@ interface Ctx {
   setYear: (id: string) => void;
   sessionUserId: string | null;
   currentUser: User | null;
-  login: (username: string, password: string) => { ok: boolean; error?: string; user?: User };
+  login: (username: string, password: string) => Promise<{ ok: boolean; error?: string; user?: User }>;
   logout: () => void;
   toast: (msg: string, tone?: "ok" | "warn") => void;
   ui: { toast: Toast | null };
   dismissToast: () => void;
+  ready: boolean;
+  /** True when data is coming from the live Supabase project. */
+  remote: boolean;
 }
 
 const AppCtx = createContext<Ctx | null>(null);
 
-function loadDb(): DB {
-  const seed = buildSeed();
-  try {
-    const raw = localStorage.getItem(DB_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed && Array.isArray(parsed.users) && Array.isArray(parsed.students)) return { ...seed, ...parsed } as DB;
-    }
-  } catch {
-    /* corrupted storage → reseed */
-  }
-  return seed;
-}
-
-function loadSession(): string | null {
-  try {
-    return localStorage.getItem(SESSION_KEY);
-  } catch {
-    return null;
-  }
-}
-
 export function AppProvider({ children }: { children: ReactNode }) {
-  const [db, setDb] = useState<DB>(loadDb);
-  const [sessionUserId, setSessionUserId] = useState<string | null>(loadSession);
-  const [yearId, setYearId] = useState(() => db.years.find((y) => y.active)?.id ?? db.years[0]?.id ?? "");
+  const [db, setDb] = useState<DB>(() => buildSeed());
+  const [ready, setReady] = useState(false);
+  const [remote, setRemote] = useState(false);
+  const [sessionUserId, setSessionUserId] = useState<string | null>(null);
+  const [yearId, setYearId] = useState("");
   const [toastState, setToastState] = useState<Toast | null>(null);
+  const dbRef = useRef(db);
 
+  /* Boot: hydrate from Supabase (RLS-filtered), then restore the Auth session. */
   useEffect(() => {
-    try {
-      localStorage.setItem(DB_KEY, JSON.stringify(db));
-    } catch {
-      /* storage full — keep running in memory */
-    }
-  }, [db]);
-
-  useEffect(() => {
-    try {
-      if (sessionUserId) localStorage.setItem(SESSION_KEY, sessionUserId);
-      else localStorage.removeItem(SESSION_KEY);
-    } catch {
-      /* ignore */
-    }
-  }, [sessionUserId]);
+    let mounted = true;
+    (async () => {
+      const { db: loaded, remote: isRemote } = await hydrate();
+      if (!mounted) return;
+      dbRef.current = loaded;
+      setDb(loaded);
+      setRemote(isRemote);
+      setYearId(loaded.years.find((y) => y.active)?.id ?? loaded.years[0]?.id ?? "");
+      if (isSupabaseConfigured && supabase) {
+        const { data } = await supabase.auth.getSession();
+        const uid = data.session?.user?.id ?? null;
+        if (uid) { setSessionUserId(uid); setProfileId(uid); }
+        supabase.auth.onAuthStateChange((_evt, session) => {
+          const id = session?.user?.id ?? null;
+          setSessionUserId(id);
+          setProfileId(id);
+        });
+      }
+      setReady(true);
+    })();
+    return () => { mounted = false; };
+  }, []);
 
   const currentUser = useMemo(() => {
     const u = getUser(db, sessionUserId);
-    // Invalid/expired session: unknown user or disabled account → signed out.
     if (!u || u.status !== "active") return null;
     return u;
   }, [db, sessionUserId]);
 
-  // If the stored session no longer resolves, clear it (req: invalid session → logout).
+  // Session points at a profile RLS didn't include in the hydrated set → pull it in.
   useEffect(() => {
-    if (sessionUserId && !currentUser) setSessionUserId(null);
-  }, [sessionUserId, currentUser]);
-
-  const update = (fn: (d: DB) => void) =>
-    setDb((prev) => {
-      const draft = structuredClone(prev);
-      fn(draft);
-      return draft;
+    if (!ready || !sessionUserId || getUser(db, sessionUserId)) return;
+    let cancelled = false;
+    loadProfileForSession(sessionUserId).then((p) => {
+      if (cancelled || !p) return;
+      update((d) => { d.users = [...d.users.filter((u) => u.id !== p.id), p]; });
     });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, sessionUserId, db]);
 
-  const login = (username: string, password: string) => {
-    const u = db.users.find((x) => x.username.toLowerCase() === username.trim().toLowerCase());
-    if (!u) return { ok: false, error: "No account found with that username." };
-    if (u.password !== password) return { ok: false, error: "Incorrect password. Try again." };
-    if (u.status !== "active") return { ok: false, error: "This account has been disabled. Contact the administrator." };
-    setSessionUserId(u.id);
-    return { ok: true, user: u };
+  const update = (fn: (d: DB) => void) => {
+    const prev = dbRef.current;
+    const draft = structuredClone(prev);
+    fn(draft);
+    dbRef.current = draft;
+    setDb(draft);
+    sync(prev, draft); // persisted to PostgreSQL; RLS decides what actually lands
   };
 
-  const logout = () => setSessionUserId(null);
+  const login = async (username: string, password: string): Promise<{ ok: boolean; error?: string; user?: User }> => {
+    if (!isSupabaseConfigured || !supabase) return { ok: false, error: "Supabase is not configured — add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY." };
+    const { data, error } = await supabase.auth.signInWithPassword({ email: usernameToEmail(username), password });
+    if (error || !data.user) return { ok: false, error: error?.message === "Invalid login credentials" ? "Incorrect username or password." : error?.message ?? "Sign-in failed." };
+    const id = data.user.id;
+    setSessionUserId(id);
+    setProfileId(id);
+    const profile = await loadProfileForSession(id);
+    if (profile) {
+      if (profile.status !== "active") { await supabase.auth.signOut(); setSessionUserId(null); setProfileId(null); return { ok: false, error: "This account has been disabled. Contact the administrator." }; }
+      update((d) => { d.users = [...d.users.filter((u) => u.id !== profile.id), profile]; });
+      return { ok: true, user: profile };
+    }
+    return { ok: true };
+  };
+
+  const logout = () => {
+    supabase?.auth.signOut();
+    setSessionUserId(null);
+    setProfileId(null);
+  };
 
   const toast = (msg: string, tone: "ok" | "warn" = "ok") => setToastState({ id: Date.now(), msg, tone });
   const dismissToast = () => setToastState(null);
 
   const resetData = () => {
-    const fresh = buildSeed();
-    setDb(fresh);
-    setYearId(fresh.years.find((y) => y.active)?.id ?? fresh.years[0].id);
-    toast("Demo data has been reset.");
+    if (!remote) {
+      const fresh = buildSeed();
+      dbRef.current = fresh;
+      setDb(fresh);
+      setYearId(fresh.years.find((y) => y.active)?.id ?? fresh.years[0].id);
+      toast("Demo data has been reset.");
+      return;
+    }
+    toast("Data now lives in Supabase — use the SQL editor or bootstrap script to reseed.", "warn");
   };
 
-  return (
-    <AppCtx.Provider
-      value={{
-        db, update, resetData,
-        yearId, setYear: setYearId,
-        sessionUserId, currentUser, login, logout,
-        toast, ui: { toast: toastState }, dismissToast,
-      }}
-    >
-      {children}
-    </AppCtx.Provider>
-  );
+  const value = {
+    db, update, resetData,
+    yearId, setYear: setYearId,
+    sessionUserId, currentUser, login, logout,
+    toast, ui: { toast: toastState }, dismissToast,
+    ready, remote,
+  };
+
+  if (!ready) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-paper">
+        <div className="anim-rise text-center">
+          <div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-[3px] border-pine-200 border-t-pine-700" />
+          <p className="font-display text-[15px] font-bold text-ink">Riverside SMS</p>
+          <p className="mt-1 text-[12px] text-soft">{isSupabaseConfigured ? "Connecting to Supabase…" : "Starting in offline demo mode…"}</p>
+        </div>
+      </div>
+    );
+  }
+
+  return <AppCtx.Provider value={value}>{children}</AppCtx.Provider>;
 }
 
 export function useApp() {
