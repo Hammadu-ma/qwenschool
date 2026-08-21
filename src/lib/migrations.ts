@@ -2,6 +2,7 @@ import m1 from "../../supabase/migrations/0001_schema.sql?raw";
 import m2 from "../../supabase/migrations/0002_rls_functions.sql?raw";
 import m3 from "../../supabase/migrations/0003_seed_core.sql?raw";
 import m4 from "../../supabase/migrations/0004_seed_academics.sql?raw";
+import m5 from "../../supabase/migrations/0005_repair_auth_seed.sql?raw";
 
 /**
  * The migration bundle ships inside the app as plain text. SQL DDL is not a

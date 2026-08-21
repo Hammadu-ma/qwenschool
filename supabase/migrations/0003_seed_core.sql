@@ -278,17 +278,31 @@ create or replace function public.seed_login(
 ) returns void language plpgsql as $$
 declare
   email text := uname || '@riverside.school';
-  c text;
+  cols  text;
+  vals  text;
+  c     text;
 begin
-  insert into auth.users
-    (instance_id, id, aud, role, email, encrypted_password, email_confirmed_at,
-     raw_app_meta_data, raw_user_meta_data, created_at, updated_at, confirmation_token, recovery_token)
-  values
-    ('00000000-0000-0000-0000-000000000000', uid, 'authenticated', 'authenticated', email,
-     crypt(pw, gen_salt('bf')), now() - created_days_ago * interval '1 day',
-     '{"provider":"email","providers":["email"]}', jsonb_build_object('username', uname),
-     now() - created_days_ago * interval '1 day', now(), '', '')
-  on conflict (id) do nothing;
+  -- Write only the columns this project's auth schema actually has
+  -- (audit_info / is_anonymous / is_sso_user vary across GoTrue versions).
+  cols := 'instance_id, id, aud, role, email, encrypted_password, email_confirmed_at, '
+       || 'raw_app_meta_data, raw_user_meta_data, created_at, updated_at, '
+       || 'confirmation_token, recovery_token';
+  vals := format(
+    '%L, %L, %L, %L, %L, crypt(%L, gen_salt(''bf'')), now() - %s * interval ''1 day'', '
+    || '%L, jsonb_build_object(''username'', %L), now() - %s * interval ''1 day'', now(), '''', ''''',
+    '00000000-0000-0000-0000-000000000000', uid, 'authenticated', 'authenticated',
+    email, pw, created_days_ago,
+    '{"provider":"email","providers":["email"]}', uname, created_days_ago);
+  foreach c in array array['audit_info', 'is_anonymous', 'is_sso_user'] loop
+    if exists (
+      select 1 from information_schema.columns
+      where table_schema = 'auth' and table_name = 'users' and column_name = c
+    ) then
+      cols := cols || ', ' || c;
+      vals := vals || case c when 'audit_info' then ', ''{}''::jsonb' else ', false' end;
+    end if;
+  end loop;
+  execute format('insert into auth.users (%s) values (%s) on conflict (id) do nothing', cols, vals);
 
   insert into auth.identities
     (id, user_id, identity_data, provider, provider_id, last_sign_in_at, created_at, updated_at)

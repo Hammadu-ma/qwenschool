@@ -397,6 +397,9 @@ create or replace function public.create_user_account(
 declare
   new_id uuid := gen_random_uuid();
   email text := coalesce(p_email, p_username || '@riverside.school');
+  cols  text;
+  vals  text;
+  c     text;
 begin
   if not public.has_perm('users.manage') then
     raise exception 'Creating accounts requires the users.manage permission.';
@@ -408,14 +411,27 @@ begin
     raise exception 'That username is already taken.';
   end if;
 
-  insert into auth.users
-    (instance_id, id, aud, role, email, encrypted_password, email_confirmed_at,
-     raw_app_meta_data, raw_user_meta_data, created_at, updated_at, confirmation_token, recovery_token)
-  values
-    ('00000000-0000-0000-0000-000000000000', new_id, 'authenticated', 'authenticated', email,
-     crypt(p_password, gen_salt('bf')), now(),
-     '{"provider":"email","providers":["email"]}', jsonb_build_object('username', p_username),
-     now(), now(), '', '');
+  -- Write only the columns this project's auth schema actually has
+  -- (audit_info / is_anonymous / is_sso_user vary across GoTrue versions).
+  cols := 'instance_id, id, aud, role, email, encrypted_password, email_confirmed_at, '
+       || 'raw_app_meta_data, raw_user_meta_data, created_at, updated_at, '
+       || 'confirmation_token, recovery_token';
+  vals := format(
+    '%L, %L, %L, %L, %L, crypt(%L, gen_salt(''bf'')), now(), '
+    || '%L, jsonb_build_object(''username'', %L), now(), now(), '''', ''''',
+    '00000000-0000-0000-0000-000000000000', new_id, 'authenticated', 'authenticated',
+    email, p_password,
+    '{"provider":"email","providers":["email"]}', p_username);
+  foreach c in array array['audit_info', 'is_anonymous', 'is_sso_user'] loop
+    if exists (
+      select 1 from information_schema.columns
+      where table_schema = 'auth' and table_name = 'users' and column_name = c
+    ) then
+      cols := cols || ', ' || c;
+      vals := vals || case c when 'audit_info' then ', ''{}''::jsonb' else ', false' end;
+    end if;
+  end loop;
+  execute format('insert into auth.users (%s) values (%s)', cols, vals);
 
   insert into auth.identities
     (id, user_id, identity_data, provider, provider_id, last_sign_in_at, created_at, updated_at)
