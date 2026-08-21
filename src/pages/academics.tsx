@@ -3,7 +3,7 @@ import {
   AlertTriangle, CalendarCheck2, Check, CheckCheck, ClipboardList, FileBarChart2, Globe2, Layers, Pencil, Plus,
   RotateCcw, Send, ShieldCheck, Table2, Trash2, Undo2,
 } from "lucide-react";
-import type { AssessmentItem, AssessmentStructure, AttendanceStatus, Student, Submission } from "../types";
+import type { AcademicYear, AssessmentItem, AssessmentStructure, AttendanceStatus, SchoolClass, Student, Subject, Submission } from "../types";
 import { DAYS, PERIODS } from "../data/seed";
 import {
   assessmentCalc, attendanceStats, childrenOf, feeStats, fmt1, fmtDate, getClass, getSection, getSubject,
