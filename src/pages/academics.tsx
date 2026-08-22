@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Banknote, BookOpen, CalendarCheck2, Check, CheckCheck, CheckCircle2,
-  ClipboardList, Clock as ClockIcon, Eye, FileBarChart2, Globe2, Layers,
+  ClipboardList, Clock as ClockIcon, Eye, FileBarChart2, FileDown, Globe2, Layers,
   PenLine, Pencil, Plus, Printer, Receipt, RotateCcw, Save, Send, ShieldCheck, Table2, Tag, Trash2,
   Undo2, UserCheck, UserX, Wallet,
 } from "lucide-react";
 import type {
-  AssessmentItem, AssessmentStructure, Assignment, AttendanceStatus, FeeItem, Homework,
+  AssessmentItem, AssessmentStructure, Assignment, AttendanceStatus, DB, FeeItem, Homework,
   SchoolClass, Section, Student, Submission, Subject, TimetableEntry,
 } from "../types";
 import {
@@ -17,6 +17,7 @@ import {
   todayISO, uid, useApp,
 } from "../store";
 import { hasPermission, pushAudit, pushNotifications } from "../rbac";
+import { downloadCsv, drawThemedHeader, drawThemedSectionLabel, drawThemedTable, newThemedDoc } from "../lib/exportKit";
 import {
   Avatar, Btn, Chip, EmptyState, Field, Modal, PageHead, Panel, Select, Stat, Tabs,
   TextArea, TextInput, tdCls, thCls,
@@ -39,9 +40,58 @@ function SubmissionChip({ status }: { status: Submission["status"] }) {
   return <Chip tone={m.tone}>{m.label}</Chip>;
 }
 
+function exportMarkSheetCsv(db: DB, structure: AssessmentStructure, roster: Student[]) {
+  const ranks = structureRanks(db, structure);
+  const header = ["#", "Student", "Reg. No", ...structure.items.map((i) => `${i.name} (/${i.max})`), "Total", "%", "Grade", "Rank"];
+  const rows: (string | number)[][] = [header];
+  roster.forEach((s, i) => {
+    const calc = assessmentCalc(db, structure, s.id);
+    const grade = calc?.complete ? gradeFor(calc.pct, db.grading) : null;
+    rows.push([
+      i + 1, fullName(s), s.regId,
+      ...structure.items.map((it) => calc?.raw[it.id] ?? ""),
+      calc?.complete ? fmt1(calc.total) : "",
+      calc?.complete ? fmt1(calc.pct) : "",
+      grade?.grade ?? "",
+      calc?.complete && ranks[s.id] ? ranks[s.id] : "",
+    ]);
+  });
+  const fname = `Marksheet-${getSubject(db, structure.subjectId)?.code ?? "subject"}-${getClass(db, structure.classId)?.name ?? ""}-${structure.period}.csv`.replace(/\s+/g, "-");
+  downloadCsv(fname, rows);
+}
+
+function exportMarkSheetPdf(db: DB, structure: AssessmentStructure, roster: Student[]) {
+  const ranks = structureRanks(db, structure);
+  const doc = newThemedDoc("landscape");
+  const y0 = drawThemedHeader(doc, db.settings.schoolName, "Mark Sheet", `${getClass(db, structure.classId)?.name} · ${getSubject(db, structure.subjectId)?.name} · ${structure.period}`);
+  const columns = [
+    { header: "#", width: 8, align: "center" as const },
+    { header: "Student", width: 45 },
+    ...structure.items.map((it) => ({ header: `${it.name} /${it.max}`, width: 22, align: "center" as const })),
+    { header: "Total", width: 18, align: "center" as const },
+    { header: "%", width: 14, align: "center" as const },
+    { header: "Grade", width: 14, align: "center" as const },
+    { header: "Rank", width: 12, align: "center" as const },
+  ];
+  const rows = roster.map((s, i) => {
+    const calc = assessmentCalc(db, structure, s.id);
+    const grade = calc?.complete ? gradeFor(calc.pct, db.grading) : null;
+    return [
+      i + 1, fullName(s),
+      ...structure.items.map((it) => calc?.raw[it.id] ?? "—"),
+      calc?.complete ? fmt1(calc.total) : "—",
+      calc?.complete ? `${fmt1(calc.pct)}%` : "—",
+      grade?.grade ?? "—",
+      calc?.complete && ranks[s.id] ? ordinal(ranks[s.id]) : "—",
+    ];
+  });
+  drawThemedTable(doc, y0 + 2, columns, rows);
+  doc.save(`Marksheet-${getSubject(db, structure.subjectId)?.code ?? "subject"}-${structure.period}.pdf`.replace(/\s+/g, "-"));
+}
+
 /* ================= mark entry (admin full / teacher scoped) ================= */
 export function MarkEntryPage() {
-  const { db, currentUser, yearId, update, toast } = useApp();
+  const { db, currentUser, yearId, setYear, update, toast } = useApp();
   const role = currentUser?.role ?? "admin";
   const isAdmin = role === "admin";
   const pairs = teacherPairs(db, currentUser);
@@ -55,10 +105,12 @@ export function MarkEntryPage() {
 
   const classOptions = [...new Set(allowedStructures.map((st) => st.classId))];
   const subjectOptions = [...new Set(allowedStructures.map((st) => st.subjectId))];
+  const periodOptions = [...new Set(allowedStructures.map((st) => st.period))];
 
   const [filterClassId, setFilterClassId] = useState<string>("");
   const [filterSectionId, setFilterSectionId] = useState<string>("");
   const [filterSubjectId, setFilterSubjectId] = useState<string>("");
+  const [filterPeriod, setFilterPeriod] = useState<string>("");
 
   const filteredStructures = allowedStructures.filter((st) => {
     if (filterClassId && st.classId !== filterClassId) return false;
@@ -67,25 +119,15 @@ export function MarkEntryPage() {
       if (!cls?.sections.some((s) => s.id === filterSectionId)) return false;
     }
     if (filterSubjectId && st.subjectId !== filterSubjectId) return false;
+    if (filterPeriod && st.period !== filterPeriod) return false;
     return true;
   });
 
-  const [sel, setSel] = useState<{ id: string | null }>({ id: null });
   const [editStruct, setEditStruct] = useState<AssessmentStructure | "new" | null>(null);
   const [savedAt, setSavedAt] = useState<string | null>(null);
 
-  const structure = useMemo(() => {
-    const current = filteredStructures.find((s) => s.id === sel.id);
-    if (current) return current;
-    return filteredStructures[0] ?? null;
-  }, [filteredStructures, sel.id]);
-
-  useEffect(() => {
-    if (filteredStructures.length > 0 && (!sel.id || !filteredStructures.some((s) => s.id === sel.id))) {
-      setSel({ id: filteredStructures[0].id });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filteredStructures.map((s) => s.id).join(",")]);
+  // With class + subject + period all chosen, exactly one structure should match.
+  const structure = filteredStructures.length === 1 ? filteredStructures[0] : null;
 
   const availableSections = useMemo(() => {
     if (!filterClassId) return [];
@@ -95,11 +137,13 @@ export function MarkEntryPage() {
 
   const roster: Student[] = useMemo(() => {
     if (!structure) return [];
-    const all = db.students.filter((s) => s.enrollment?.classId === structure.classId);
+    let all = db.students.filter((s) => s.enrollment?.classId === structure.classId);
+    if (filterSectionId) all = all.filter((s) => s.enrollment?.sectionId === filterSectionId);
     if (isAdmin) return all;
     const allowed = teacherStudentIds(db, currentUser);
     return all.filter((s) => allowed.has(s.id));
-  }, [db, structure, isAdmin, currentUser]);
+  }, [db, structure, filterSectionId, isAdmin, currentUser]);
+
 
   const ranks = structure ? structureRanks(db, structure) : {};
 
@@ -213,15 +257,28 @@ export function MarkEntryPage() {
 
   return (
     <div className="mx-auto max-w-6xl">
-      <PageHead kicker="Examination" title="Mark entry" sub={isAdmin ? "Pick a structure, type raw marks — totals, percentages, grades and ranks are all derived." : "Only subjects you are assigned to appear. Totals follow each structure's weights."}>
+      <PageHead kicker="Examination" title="Mark entry" sub={isAdmin ? "Choose year, semester, grade, section and subject — totals, percentages, grades and ranks are all derived." : "Only subjects you are assigned to appear. Totals follow each structure's weights."}>
         {isAdmin && <Btn variant="gold" onClick={() => setEditStruct("new")}><Plus className="h-4 w-4" /> New structure</Btn>}
       </PageHead>
 
       <div className="anim-rise mb-4 flex flex-wrap items-end gap-3 rounded-lg border border-mist bg-card p-3">
+        <Field label="Academic year" className="w-40">
+          <Select value={yearId} onChange={(e) => setYear(e.target.value)}>
+            {db.years.map((y) => <option key={y.id} value={y.id}>{y.name}</option>)}
+          </Select>
+        </Field>
+
+        <Field label="Semester" className="w-36">
+          <Select value={filterPeriod} onChange={(e) => setFilterPeriod(e.target.value)}>
+            <option value="">All</option>
+            {periodOptions.map((p) => <option key={p} value={p}>{p}</option>)}
+          </Select>
+        </Field>
+
         <Field label="Grade" className="w-40">
           <Select
             value={filterClassId}
-            onChange={(e) => { setFilterClassId(e.target.value); setFilterSectionId(""); setSel({ id: null }); }}
+            onChange={(e) => { setFilterClassId(e.target.value); setFilterSectionId(""); }}
           >
             <option value="">All grades</option>
             {classOptions.map((id) => {
@@ -234,7 +291,7 @@ export function MarkEntryPage() {
         <Field label="Section" className="w-32">
           <Select
             value={filterSectionId}
-            onChange={(e) => { setFilterSectionId(e.target.value); setSel({ id: null }); }}
+            onChange={(e) => setFilterSectionId(e.target.value)}
             disabled={!filterClassId}
           >
             <option value="">All sections</option>
@@ -245,7 +302,7 @@ export function MarkEntryPage() {
         <Field label="Subject" className="w-48">
           <Select
             value={filterSubjectId}
-            onChange={(e) => { setFilterSubjectId(e.target.value); setSel({ id: null }); }}
+            onChange={(e) => setFilterSubjectId(e.target.value)}
           >
             <option value="">All subjects</option>
             {subjectOptions.map((id) => {
@@ -255,36 +312,26 @@ export function MarkEntryPage() {
           </Select>
         </Field>
 
-        {(filterClassId || filterSectionId || filterSubjectId) && (
-          <Btn size="sm" variant="ghost" onClick={() => { setFilterClassId(""); setFilterSectionId(""); setFilterSubjectId(""); setSel({ id: null }); }}>
+        {(filterClassId || filterSectionId || filterSubjectId || filterPeriod) && (
+          <Btn size="sm" variant="ghost" onClick={() => { setFilterClassId(""); setFilterSectionId(""); setFilterSubjectId(""); setFilterPeriod(""); }}>
             <RotateCcw className="h-3.5 w-3.5" /> Clear filters
           </Btn>
         )}
-
-        <span className="ml-auto text-[11.5px] text-soft">{filteredStructures.length} structure{filteredStructures.length !== 1 ? "s" : ""} found</span>
       </div>
 
       {allowedStructures.length === 0 ? (
         <Panel className="anim-rise"><EmptyState icon={<Table2 className="h-5 w-5" />} title="No assessment structures in your scope" body={isAdmin ? "Create a structure: subject + period + assessments with max marks and weights." : "Structures appear here once the admin configures them for your subjects, or ask the office."} action={isAdmin ? <Btn onClick={() => setEditStruct("new")}><Plus className="h-4 w-4" /> New structure</Btn> : undefined} /></Panel>
-      ) : filteredStructures.length === 0 ? (
-        <Panel className="anim-rise"><EmptyState icon={<Table2 className="h-5 w-5" />} title="No structures match your filters" body="Try adjusting your filter criteria." /></Panel>
+      ) : !structure ? (
+        <Panel className="anim-rise">
+          <EmptyState
+            icon={<Table2 className="h-5 w-5" />}
+            title={filteredStructures.length === 0 ? "No structure matches those filters" : "Choose a semester, grade and subject"}
+            body={filteredStructures.length === 0 ? "Try a different combination, or ask the office to create one." : "Once all three narrow the list to a single mark sheet, it will open here."}
+          />
+        </Panel>
       ) : (
         <>
-          <div className="anim-rise mb-4 flex flex-wrap gap-1.5">
-            {filteredStructures.map((st) => {
-              const active = structure?.id === st.id;
-              return (
-                <button key={st.id} onClick={() => { setSel({ id: st.id }); setSavedAt(null); }}
-                  className={`cursor-pointer rounded-lg border px-3 py-2 text-left transition-all duration-150 ${active ? "border-pine-800 bg-pine-800 text-white shadow-sm" : "border-mist bg-card hover:border-pine-300"}`}>
-                  <span className={`block text-[12.5px] font-bold ${active ? "text-white" : "text-ink"}`}>{getSubject(db, st.subjectId)?.name}</span>
-                  <span className={`block text-[10.5px] ${active ? "text-pine-300" : "text-soft"}`}>{getClass(db, st.classId)?.name} · {st.period}</span>
-                </button>
-              );
-            })}
-          </div>
-
-          {structure && (
-            <Panel className="anim-rise overflow-hidden">
+          <Panel className="anim-rise overflow-hidden">
               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-mist bg-pine-900 px-4 py-3.5 sm:px-5">
                 <div>
                   <h2 className="font-display text-[15px] font-extrabold tracking-tight text-white">
@@ -295,6 +342,8 @@ export function MarkEntryPage() {
                 <div className="flex flex-wrap items-center gap-2">
                   {savedAt && status === "draft" && <Chip tone="pine" className="!border-pine-600 !bg-pine-800 !text-pine-100"><Check className="h-3 w-3" /> Saved {savedAt}</Chip>}
                   <SubmissionChip status={status} />
+                  <Btn size="sm" variant="soft" onClick={() => exportMarkSheetCsv(db, structure, roster)}><FileDown className="h-3.5 w-3.5" /> CSV</Btn>
+                  <Btn size="sm" variant="soft" onClick={() => exportMarkSheetPdf(db, structure, roster)}><Printer className="h-3.5 w-3.5" /> PDF</Btn>
                   {isAdmin && <Btn size="sm" variant="gold" onClick={() => setEditStruct(structure)}><Pencil className="h-3.5 w-3.5" /> Edit structure</Btn>}
                 </div>
               </div>
@@ -304,6 +353,7 @@ export function MarkEntryPage() {
                   {canEdit && canEnter && (
                     <Btn size="sm" onClick={() => setConfirmSubmit(true)}><Send className="h-3.5 w-3.5" /> Submit for review</Btn>
                   )}
+
                   {status === "submitted" && canApprove && (
                     <>
                       <Btn size="sm" variant="gold" onClick={doApprove}><CheckCheck className="h-3.5 w-3.5" /> Approve</Btn>
@@ -385,7 +435,6 @@ export function MarkEntryPage() {
                 </table>
               </div>
             </Panel>
-          )}
         </>
       )}
 
@@ -1279,44 +1328,117 @@ function ReportCardModal({ student, onClose, adminView }: { student: Student; on
   );
 }
 
+function exportReportCardCsv(db: DB, student: Student, results: ReturnType<typeof studentResults>) {
+  const rows: (string | number)[][] = [["Subject", "Period", "Assessment", "Max", "Weight %", "Score"]];
+  results.forEach((r) => {
+    r.st.items.forEach((it) => {
+      rows.push([r.subject?.name ?? "", r.st.period, it.name, it.max, it.weight, r.calc.raw[it.id] ?? ""]);
+    });
+    rows.push([r.subject?.name ?? "", r.st.period, "TOTAL", "", "", r.calc.complete ? fmt1(r.calc.total) : ""]);
+  });
+  downloadCsv(`Report-${student.regId}.csv`, rows);
+}
+
+function exportReportCardPdf(db: DB, student: Student, results: ReturnType<typeof studentResults>) {
+  const doc = newThemedDoc("portrait");
+  let y = drawThemedHeader(doc, db.settings.schoolName, "Report Card", `${fullName(student)} · Reg. ${student.regId}`);
+  y += 2;
+  y = drawThemedTable(doc, y, [
+    { header: "Subject", width: 55 },
+    { header: "Period", width: 35, align: "center" },
+    { header: "Total", width: 25, align: "center" },
+    { header: "%", width: 20, align: "center" },
+    { header: "Grade", width: 20, align: "center" },
+  ], results.map((r) => {
+    const grade = r.calc.complete ? gradeFor(r.calc.pct, db.grading) : null;
+    return [r.subject?.name ?? "", r.st.period, r.calc.complete ? fmt1(r.calc.total) : "—", r.calc.complete ? `${fmt1(r.calc.pct)}%` : "—", grade?.grade ?? "—"];
+  }));
+  y += 6;
+  results.forEach((r) => {
+    y = drawThemedSectionLabel(doc, y, `${r.subject?.name ?? ""} — ${r.st.period}`);
+    y = drawThemedTable(doc, y, [
+      { header: "Assessment", width: 65 },
+      { header: "Max", width: 25, align: "center" },
+      { header: "Weight %", width: 25, align: "center" },
+      { header: "Score", width: 25, align: "center" },
+    ], r.st.items.map((it) => [it.name, it.max, `${it.weight}%`, r.calc.raw[it.id] ?? "—"]));
+    y += 6;
+  });
+  doc.save(`Report-${student.regId}.pdf`);
+}
+
 function ReportCardBody({ student, publishedOnly }: { student: Student; publishedOnly?: boolean }) {
   const { db } = useApp();
   const all = studentResults(db, student);
   const results = publishedOnly ? all.filter((r) => submissionStatus(db, r.st.id) === "published") : all;
   const completeOnes = results.filter((r) => r.calc.complete);
   const avg = completeOnes.length ? +(completeOnes.reduce((s, r) => s + r.calc.pct, 0) / completeOnes.length).toFixed(1) : null;
+  const [tab, setTab] = useState<"summary" | "detailed">("summary");
 
   return (
     <div className="anim-rise">
-      <div className="mb-3 flex items-center gap-3 rounded-lg border border-mist bg-paper/50 p-3">
+      <div className="mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-mist bg-paper/50 p-3">
         <Avatar student={student} size={40} />
         <div>
           <p className="font-display font-bold text-ink">{fullName(student)}</p>
           <p className="text-[11.5px] text-soft">{student.enrollment ? sectionShort(db, student.enrollment.classId, student.enrollment.sectionId) : "—"} · Reg. {student.regId}</p>
         </div>
-        {avg != null && <span className="ml-auto text-right"><span className="block font-mono text-[20px] font-extrabold text-pine-800">{avg}%</span><span className="block text-[10.5px] font-semibold text-soft">overall average</span></span>}
+        {avg != null && <span className="text-right"><span className="block font-mono text-[20px] font-extrabold text-pine-800">{avg}%</span><span className="block text-[10.5px] font-semibold text-soft">overall average</span></span>}
+        <div className="ml-auto flex gap-2">
+          <Btn size="sm" variant="soft" onClick={() => exportReportCardCsv(db, student, results)}><FileDown className="h-3.5 w-3.5" /> CSV</Btn>
+          <Btn size="sm" variant="soft" onClick={() => exportReportCardPdf(db, student, results)}><Printer className="h-3.5 w-3.5" /> PDF</Btn>
+        </div>
       </div>
 
-      <Panel className="overflow-hidden">
-        <table className="w-full">
-          <thead className="border-b border-mist bg-paper/60"><tr><th className={thCls()}>Subject</th><th className={thCls()}>Period</th><th className={`${thCls()} text-center`}>Total</th><th className={`${thCls()} text-center`}>%</th><th className={`${thCls()} text-center`}>Grade</th></tr></thead>
-          <tbody className="divide-y divide-mist/70">
-            {results.map((r, i) => {
-              const grade = r.calc.complete ? gradeFor(r.calc.pct, db.grading) : null;
-              return (
-                <tr key={i}>
-                  <td className={tdCls()}><span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full" style={{ background: r.subject?.color }} /> {r.subject?.name}</span></td>
-                  <td className={tdCls()}>{r.st.period}</td>
-                  <td className={`${tdCls()} text-center font-mono font-bold`}>{r.calc.complete ? fmt1(r.calc.total) : "—"}</td>
-                  <td className={`${tdCls()} text-center font-mono`}>{r.calc.complete ? `${fmt1(r.calc.pct)}%` : "—"}</td>
-                  <td className={`${tdCls()} text-center`}>{grade ? <Chip tone={r.calc.pct >= 80 ? "pine" : r.calc.pct >= 50 ? "gold" : "rust"}>{grade.grade}</Chip> : <Chip tone="gray">pending</Chip>}</td>
-                </tr>
-              );
-            })}
-            {results.length === 0 && <tr><td colSpan={5}><EmptyState icon={<FileBarChart2 className="h-5 w-5" />} title="No published results yet" body="Results appear here once the office publishes them." /></td></tr>}
-          </tbody>
-        </table>
-      </Panel>
+      <div className="mb-3"><Tabs tabs={[{ id: "summary", label: "Summary", icon: <FileBarChart2 className="h-3.5 w-3.5" /> }, { id: "detailed", label: "Detailed", icon: <Table2 className="h-3.5 w-3.5" /> }]} active={tab} onChange={(id) => setTab(id as any)} /></div>
+
+      {tab === "summary" ? (
+        <Panel className="overflow-hidden">
+          <table className="w-full">
+            <thead className="border-b border-mist bg-paper/60"><tr><th className={thCls()}>Subject</th><th className={thCls()}>Period</th><th className={`${thCls()} text-center`}>Total</th><th className={`${thCls()} text-center`}>%</th><th className={`${thCls()} text-center`}>Grade</th></tr></thead>
+            <tbody className="divide-y divide-mist/70">
+              {results.map((r, i) => {
+                const grade = r.calc.complete ? gradeFor(r.calc.pct, db.grading) : null;
+                return (
+                  <tr key={i}>
+                    <td className={tdCls()}><span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full" style={{ background: r.subject?.color }} /> {r.subject?.name}</span></td>
+                    <td className={tdCls()}>{r.st.period}</td>
+                    <td className={`${tdCls()} text-center font-mono font-bold`}>{r.calc.complete ? fmt1(r.calc.total) : "—"}</td>
+                    <td className={`${tdCls()} text-center font-mono`}>{r.calc.complete ? `${fmt1(r.calc.pct)}%` : "—"}</td>
+                    <td className={`${tdCls()} text-center`}>{grade ? <Chip tone={r.calc.pct >= 80 ? "pine" : r.calc.pct >= 50 ? "gold" : "rust"}>{grade.grade}</Chip> : <Chip tone="gray">pending</Chip>}</td>
+                  </tr>
+                );
+              })}
+              {results.length === 0 && <tr><td colSpan={5}><EmptyState icon={<FileBarChart2 className="h-5 w-5" />} title="No published results yet" body="Results appear here once the office publishes them." /></td></tr>}
+            </tbody>
+          </table>
+        </Panel>
+      ) : (
+        <div className="space-y-4">
+          {results.map((r, i) => (
+            <Panel key={i} className="overflow-hidden">
+              <div className="flex items-center justify-between border-b border-mist bg-paper/60 px-4 py-2.5">
+                <span className="flex items-center gap-2 text-[12.5px] font-bold text-ink"><span className="h-2.5 w-2.5 rounded-full" style={{ background: r.subject?.color }} /> {r.subject?.name} <span className="font-normal text-soft">· {r.st.period}</span></span>
+                <span className="font-mono text-[12.5px] font-bold text-pine-800">{r.calc.complete ? `${fmt1(r.calc.total)} (${fmt1(r.calc.pct)}%)` : "Incomplete"}</span>
+              </div>
+              <table className="w-full">
+                <thead className="border-b border-mist bg-paper/40"><tr><th className={thCls()}>Assessment</th><th className={`${thCls()} text-center`}>Max</th><th className={`${thCls()} text-center`}>Weight</th><th className={`${thCls()} text-center`}>Score</th></tr></thead>
+                <tbody className="divide-y divide-mist/70">
+                  {r.st.items.map((it) => (
+                    <tr key={it.id}>
+                      <td className={tdCls()}>{it.name}</td>
+                      <td className={`${tdCls()} text-center font-mono`}>{it.max}</td>
+                      <td className={`${tdCls()} text-center font-mono`}>{it.weight}%</td>
+                      <td className={`${tdCls()} text-center font-mono font-bold`}>{r.calc.raw[it.id] ?? "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </Panel>
+          ))}
+          {results.length === 0 && <Panel><EmptyState icon={<Table2 className="h-5 w-5" />} title="No published results yet" body="Results appear here once the office publishes them." /></Panel>}
+        </div>
+      )}
     </div>
   );
 }
