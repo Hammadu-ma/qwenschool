@@ -349,10 +349,27 @@ export function buildSeed(): DB {
   /* ---------------- fees ---------------- */
   const fees: DB["fees"] = [];
   let fid = 0;
+  const demoMethods: import("../types").PaymentMethod[] = ["telebirr", "cbe_birr", "bank_transfer", "cash"];
+  const demoBanks = ["Commercial Bank of Ethiopia", "Awash Bank", "Dashen Bank"];
+  const paymentFor = (amount: number, idx: number): import("../types").Payment[] => {
+    if (amount <= 0) return [];
+    const method = demoMethods[idx % demoMethods.length];
+    return [{
+      id: `pay${++fid}0${idx}`,
+      amount,
+      method,
+      reference: method === "cash" ? undefined : method === "bank_transfer" ? `DEP-${100000 + idx}` : `${8000000000 + idx * 137}`,
+      bank: method === "bank_transfer" ? demoBanks[idx % demoBanks.length] : undefined,
+      date: addDays(-15 + (idx % 10)),
+      recordedBy: "u-admin",
+    }];
+  };
   students.forEach((s, i) => {
+    const tuitionPaid = i % 4 === 0 ? 2500 : 4500;
+    const labPaid = i % 3 === 0 ? 0 : 350;
     fees.push(
-      { id: `fe${++fid}`, studentId: s.id, label: "Tuition — Term 1", amount: 4500, paid: i % 4 === 0 ? 2500 : 4500, due: addDays(-20) },
-      { id: `fe${++fid}`, studentId: s.id, label: "Laboratory & materials", amount: 350, paid: i % 3 === 0 ? 0 : 350, due: addDays(12) }
+      { id: `fe${++fid}`, studentId: s.id, label: "Tuition — Term 1", amount: 4500, paid: tuitionPaid, due: addDays(-20), payments: paymentFor(tuitionPaid, i) },
+      { id: `fe${++fid}`, studentId: s.id, label: "Laboratory & materials", amount: 350, paid: labPaid, due: addDays(12), payments: paymentFor(labPaid, i + 1) }
     );
   });
 

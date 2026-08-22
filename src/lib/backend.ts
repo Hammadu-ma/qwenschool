@@ -205,7 +205,7 @@ export async function hydrate(): Promise<{ db: DB; mode: DbMode; schemaMissing: 
     });
   }
 
-  if (fees) db.fees = (fees as any[]).map((f) => ({ id: f.id, studentId: f.student_id, label: f.label, amount: Number(f.amount), paid: Number(f.paid), due: f.due_date }));
+  if (fees) db.fees = (fees as any[]).map((f) => ({ id: f.id, studentId: f.student_id, label: f.label, amount: Number(f.amount), paid: Number(f.paid), due: f.due_date, payments: f.payments ?? [] }));
   if (homework) db.homework = (homework as any[]).map((h) => ({ id: h.id, yearId: h.year_id, classId: h.class_id, sectionId: h.section_id, subjectId: h.subject_id, title: h.title, description: h.description, issued: h.issued, due: h.due, submitted: h.submitted_students ?? [] }));
   if (timetable) db.timetable = (timetable as any[]).map((t) => ({ id: t.id, classId: t.class_id, sectionId: t.section_id, day: t.day, period: t.period, subjectId: t.subject_id, room: t.room }));
 
@@ -342,7 +342,7 @@ function rowsOf(db: DB) {
       published_by: s.publishedBy, published_at: s.publishedAt,
     })),
     grade_bands: db.grading.map((g, i) => ({ id: `gb${i + 1}`, school_id: SCHOOL_ID, min_pct: g.min, max_pct: g.max, grade: g.grade, remark: g.remark, sort: i })),
-    fee_items: db.fees.map((f) => ({ id: f.id, student_id: f.studentId, label: f.label, amount: f.amount, paid: f.paid, due_date: f.due })),
+    fee_items: db.fees.map((f) => ({ id: f.id, student_id: f.studentId, label: f.label, amount: f.amount, paid: f.paid, due_date: f.due, payments: f.payments ?? [] })),
     homework: db.homework.map((h) => ({ id: h.id, year_id: h.yearId, class_id: h.classId, section_id: h.sectionId, subject_id: h.subjectId, title: h.title, description: h.description, issued: h.issued, due: h.due, submitted_students: h.submitted })),
     timetable_entries: db.timetable.map((t) => ({ id: t.id, class_id: t.classId, section_id: t.sectionId, day: t.day, period: t.period, subject_id: t.subjectId, room: t.room })),
     role_defs: db.roles.map((r) => ({ id: r.id, name: r.name, description: r.description, is_system: r.system, all_permissions: r.permissions.includes("*"), applies_to: r.appliesTo, status: r.status })),

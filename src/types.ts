@@ -229,6 +229,21 @@ export interface AttendanceRecord {
   marks: Record<ID, AttendanceStatus>;
 }
 
+/** Payment channels in common use for school fee collection in Ethiopia. */
+export type PaymentMethod = "cash" | "telebirr" | "cbe_birr" | "bank_transfer" | "cheque";
+
+export interface Payment {
+  id: ID;
+  amount: number;
+  method: PaymentMethod;
+  /** Transaction/reference number — the Telebirr or CBE Birr confirmation code, bank slip number, or cheque number. */
+  reference?: string;
+  /** Receiving bank, only set when method is "bank_transfer". */
+  bank?: string;
+  date: string;
+  recordedBy?: string;
+}
+
 export interface FeeItem {
   id: ID;
   studentId: ID;
@@ -236,6 +251,7 @@ export interface FeeItem {
   amount: number;
   paid: number;
   due: string;
+  payments: Payment[];
 }
 
 /* ================= communication ================= */

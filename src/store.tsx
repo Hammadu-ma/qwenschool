@@ -329,23 +329,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
           setSessionUserId(id);
           setProfileId(id);
         });
-      } else if (isSupabaseConfigured && supabase) {
-        // Boot probe failed pre-login (anon has no grants — expected).
-        // Re-probe once the user actually authenticates, so a successful
-        // login can promote us from "local" to "live" instead of getting
-        // stuck in local mode for the rest of the session.
-        supabase.auth.onAuthStateChange(async (evt, session) => {
-          if (evt !== "SIGNED_IN" || !session?.user?.id) return;
-          const { db: loaded2, mode: m2, schemaMissing: missing2 } = await hydrate();
-          if (!mounted) return;
-          dbRef.current = loaded2;
-          setDb(loaded2);
-          setMode(m2);
-          setSchemaMissing(missing2);
-          setYearId(loaded2.years.find((y) => y.active)?.id ?? loaded2.years[0]?.id ?? "");
-          setSessionUserId(session.user.id);
-          setProfileId(session.user.id);
-        });
       }
       setReady(true);
     })();

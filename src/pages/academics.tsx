@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import type {
   AssessmentItem, AssessmentStructure, Assignment, AttendanceStatus, DB, FeeItem, Homework,
-  SchoolClass, Section, Student, Submission, Subject, TimetableEntry,
+  PaymentMethod, SchoolClass, Section, Student, Submission, Subject, TimetableEntry,
 } from "../types";
 import {
   assessmentCalc, attendanceStats, childrenOf, feeStats, fmt1, fmtDate, fullName, getClass,
@@ -1513,6 +1513,17 @@ export function FeesPage() {
   );
 }
 
+const PAYMENT_METHODS: { id: PaymentMethod; label: string }[] = [
+  { id: "telebirr", label: "telebirr" },
+  { id: "cbe_birr", label: "CBE Birr" },
+  { id: "bank_transfer", label: "Bank transfer" },
+  { id: "cash", label: "Cash" },
+  { id: "cheque", label: "Cheque" },
+];
+const ETH_BANKS = ["Commercial Bank of Ethiopia", "Awash Bank", "Dashen Bank", "Bank of Abyssinia", "Wegagen Bank", "Cooperative Bank of Oromia", "Zemen Bank", "Hibret Bank"];
+
+function methodLabel(m: PaymentMethod) { return PAYMENT_METHODS.find((x) => x.id === m)?.label ?? m; }
+
 function FeeLedgerModal({ student, canManage, onClose }: { student: Student; canManage: boolean; onClose: () => void }) {
   const { db, update, toast, currentUser } = useApp();
   const [addOpen, setAddOpen] = useState(false);
@@ -1520,14 +1531,18 @@ function FeeLedgerModal({ student, canManage, onClose }: { student: Student; can
   const [amount, setAmount] = useState(0);
   const [due, setDue] = useState(todayISO());
   const [payItem, setPayItem] = useState<FeeItem | null>(null);
+  const [historyItem, setHistoryItem] = useState<FeeItem | null>(null);
   const [payAmount, setPayAmount] = useState(0);
+  const [payMethod, setPayMethod] = useState<PaymentMethod>("telebirr");
+  const [payReference, setPayReference] = useState("");
+  const [payBank, setPayBank] = useState(ETH_BANKS[0]);
 
   const items = db.fees.filter((f) => f.studentId === student.id);
   const stats = feeStats(db, student.id);
 
   const addItem = () => {
     if (!label.trim() || amount <= 0) { toast("Give the fee a label and a positive amount.", "warn"); return; }
-    update((d) => { d.fees.push({ id: uid(), studentId: student.id, label: label.trim(), amount, paid: 0, due }); pushAudit(d, currentUser, "fee.create", `${label.trim()} · ${fullName(student)}`); });
+    update((d) => { d.fees.push({ id: uid(), studentId: student.id, label: label.trim(), amount, paid: 0, due, payments: [] }); pushAudit(d, currentUser, "fee.create", `${label.trim()} · ${fullName(student)}`); });
     toast("Fee item added.");
     setAddOpen(false); setLabel(""); setAmount(0);
   };
@@ -1537,13 +1552,21 @@ function FeeLedgerModal({ student, canManage, onClose }: { student: Student; can
   };
   const recordPayment = () => {
     if (!payItem || payAmount <= 0) { toast("Enter a positive payment amount.", "warn"); return; }
+    if (payMethod !== "cash" && !payReference.trim()) { toast(`Enter the ${methodLabel(payMethod)} transaction reference.`, "warn"); return; }
     update((d) => {
       const f = d.fees.find((x) => x.id === payItem.id);
-      if (f) f.paid = Math.min(f.amount, f.paid + payAmount);
-      pushAudit(d, currentUser, "fee.payment", `${payItem.label} · ${fullName(student)}`, `Br ${payAmount}`);
+      if (!f) return;
+      f.paid = Math.min(f.amount, f.paid + payAmount);
+      f.payments = [...(f.payments ?? []), {
+        id: uid(), amount: payAmount, method: payMethod,
+        reference: payMethod === "cash" ? undefined : payReference.trim(),
+        bank: payMethod === "bank_transfer" ? payBank : undefined,
+        date: todayISO(), recordedBy: currentUser?.name,
+      }];
+      pushAudit(d, currentUser, "fee.payment", `${payItem.label} · ${fullName(student)}`, `Br ${payAmount} via ${methodLabel(payMethod)}${payReference ? ` (${payReference.trim()})` : ""}`);
     });
     toast("Payment recorded.");
-    setPayItem(null); setPayAmount(0);
+    setPayItem(null); setPayAmount(0); setPayReference(""); setPayMethod("telebirr");
   };
 
   const printReceipt = async (f: FeeItem) => {
@@ -1559,7 +1582,14 @@ function FeeLedgerModal({ student, canManage, onClose }: { student: Student; can
     doc.text(`Billed: Br ${f.amount.toLocaleString()}`, 12, 57);
     doc.text(`Paid to date: Br ${f.paid.toLocaleString()}`, 12, 64);
     doc.text(`Outstanding: Br ${(f.amount - f.paid).toLocaleString()}`, 12, 71);
-    doc.text(`Date issued: ${fmtDate(todayISO())}`, 12, 78);
+    const last = (f.payments ?? [])[f.payments.length - 1];
+    let y = 78;
+    if (last) {
+      doc.text(`Last payment: Br ${last.amount.toLocaleString()} via ${methodLabel(last.method)}`, 12, y); y += 7;
+      if (last.bank) { doc.text(`Bank: ${last.bank}`, 12, y); y += 7; }
+      if (last.reference) { doc.text(`Reference: ${last.reference}`, 12, y); y += 7; }
+    }
+    doc.text(`Date issued: ${fmtDate(todayISO())}`, 12, y);
     doc.save(`Receipt-${student.regId}-${f.label.replace(/\s+/g, "-")}.pdf`);
   };
 
@@ -1588,11 +1618,12 @@ function FeeLedgerModal({ student, canManage, onClose }: { student: Student; can
           <div key={f.id} className="flex flex-wrap items-center gap-2 rounded-lg border border-mist bg-card p-2.5">
             <div className="min-w-[140px] flex-1">
               <p className="text-[12.5px] font-bold text-ink">{f.label}</p>
-              <p className="text-[10.5px] text-soft">Due {fmtDate(f.due)}</p>
+              <p className="text-[10.5px] text-soft">Due {fmtDate(f.due)}{(f.payments?.length ?? 0) > 0 && ` · ${f.payments.length} payment${f.payments.length !== 1 ? "s" : ""}`}</p>
             </div>
             <span className="font-mono text-[12.5px]">Br {f.amount.toLocaleString()}</span>
             <Chip tone={f.paid >= f.amount ? "pine" : f.paid > 0 ? "gold" : "rust"}>{f.paid >= f.amount ? "Paid" : f.paid > 0 ? "Partial" : "Unpaid"}</Chip>
-            {canManage && f.paid < f.amount && <Btn size="sm" variant="soft" onClick={() => { setPayItem(f); setPayAmount(f.amount - f.paid); }}><Wallet className="h-3.5 w-3.5" /> Record payment</Btn>}
+            {canManage && f.paid < f.amount && <Btn size="sm" variant="soft" onClick={() => { setPayItem(f); setPayAmount(f.amount - f.paid); setPayMethod("telebirr"); setPayReference(""); setPayBank(ETH_BANKS[0]); }}><Wallet className="h-3.5 w-3.5" /> Record payment</Btn>}
+            {(f.payments?.length ?? 0) > 0 && <Btn size="sm" variant="ghost" onClick={() => setHistoryItem(f)}><Eye className="h-3.5 w-3.5" /> History</Btn>}
             <Btn size="sm" variant="ghost" onClick={() => printReceipt(f)}><Printer className="h-3.5 w-3.5" /> Receipt</Btn>
             {canManage && <button onClick={() => removeItem(f)} className="cursor-pointer rounded p-1.5 text-soft hover:bg-rust-100 hover:text-rust-600"><Trash2 className="h-3.5 w-3.5" /></button>}
           </div>
@@ -1601,11 +1632,49 @@ function FeeLedgerModal({ student, canManage, onClose }: { student: Student; can
       </div>
 
       {payItem && (
-        <Modal title={`Record payment — ${payItem.label}`} onClose={() => setPayItem(null)}
+        <Modal title={`Record payment — ${payItem.label}`} kicker="Choose the channel the payer used" onClose={() => setPayItem(null)}
           footer={<><Btn variant="ghost" onClick={() => setPayItem(null)}>Cancel</Btn><Btn onClick={recordPayment}><Save className="h-4 w-4" /> Save payment</Btn></>}>
           <Field label={`Amount (outstanding: Br ${(payItem.amount - payItem.paid).toLocaleString()})`} required>
             <input type="number" min={0} max={payItem.amount - payItem.paid} value={payAmount} onChange={(e) => setPayAmount(Math.min(payItem.amount - payItem.paid, Number(e.target.value) || 0))} className="w-full rounded-lg border border-mist bg-card px-3 py-2 text-[13.5px]" />
           </Field>
+          <Field label="Payment method" required className="mt-3">
+            <div className="flex flex-wrap gap-1.5">
+              {PAYMENT_METHODS.map((m) => (
+                <button key={m.id} onClick={() => setPayMethod(m.id)}
+                  className={`cursor-pointer rounded-lg border px-3 py-1.5 text-[12px] font-bold transition-all ${payMethod === m.id ? "border-pine-700 bg-pine-700 text-white" : "border-mist bg-card text-soft hover:border-pine-300"}`}>
+                  {m.label}
+                </button>
+              ))}
+            </div>
+          </Field>
+          {payMethod === "bank_transfer" && (
+            <Field label="Receiving bank" required className="mt-3">
+              <Select value={payBank} onChange={(e) => setPayBank(e.target.value)}>{ETH_BANKS.map((b) => <option key={b} value={b}>{b}</option>)}</Select>
+            </Field>
+          )}
+          {payMethod !== "cash" && (
+            <Field label={payMethod === "bank_transfer" ? "Deposit slip / transaction number" : payMethod === "cheque" ? "Cheque number" : `${methodLabel(payMethod)} transaction number`} required className="mt-3">
+              <TextInput value={payReference} onChange={(e) => setPayReference(e.target.value)} placeholder={payMethod === "telebirr" || payMethod === "cbe_birr" ? "e.g. CBE1A2B3C4D5" : "Reference number"} />
+            </Field>
+          )}
+        </Modal>
+      )}
+
+      {historyItem && (
+        <Modal title={`Payment history — ${historyItem.label}`} onClose={() => setHistoryItem(null)} footer={<Btn variant="ghost" onClick={() => setHistoryItem(null)}>Close</Btn>}>
+          <div className="space-y-2">
+            {[...(historyItem.payments ?? [])].reverse().map((p) => (
+              <div key={p.id} className="rounded-lg border border-mist bg-card p-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-[13px] font-bold text-ink">Br {p.amount.toLocaleString()}</span>
+                  <Chip tone="pine">{methodLabel(p.method)}</Chip>
+                </div>
+                <p className="mt-1 text-[11px] text-soft">
+                  {fmtDate(p.date)}{p.bank ? ` · ${p.bank}` : ""}{p.reference ? ` · Ref: ${p.reference}` : ""}{p.recordedBy ? ` · recorded by ${p.recordedBy}` : ""}
+                </p>
+              </div>
+            ))}
+          </div>
         </Modal>
       )}
     </Modal>

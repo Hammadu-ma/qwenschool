@@ -3,6 +3,7 @@ import m2 from "../../supabase/migrations/0002_rls_functions.sql?raw";
 import m3 from "../../supabase/migrations/0003_seed_core.sql?raw";
 import m4 from "../../supabase/migrations/0004_seed_academics.sql?raw";
 import m5 from "../../supabase/migrations/0005_repair_auth_seed.sql?raw";
+import m6 from "../../supabase/migrations/0006_fee_payments.sql?raw";
 
 /**
  * The migration bundle ships inside the app as plain text. SQL DDL is not a
@@ -23,6 +24,8 @@ export const MIGRATIONS: MigrationFile[] = [
   { file: "0002_rls_functions.sql", title: "RLS policies, authz functions, workflow triggers", sql: m2 },
   { file: "0003_seed_core.sql", title: "School structure, people, roles + demo logins", sql: m3 },
   { file: "0004_seed_academics.sql", title: "Assessments, marks, attendance, communication", sql: m4 },
+  { file: "0005_repair_auth_seed.sql", title: "Auth repair — fixes GoTrue schema error on login", sql: m5 },
+  { file: "0006_fee_payments.sql", title: "Fee payments — per-transaction method & reference history", sql: m6 },
 ];
 
 export const sqlEditorUrl = `https://supabase.com/dashboard/project/${PROJECT_REF}/sql/new`;
