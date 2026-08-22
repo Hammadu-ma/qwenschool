@@ -281,16 +281,16 @@ function termName(termId: string | null | undefined): string {
    sync — DB-diff → PostgreSQL
    ========================================================================= */
 
-async function upsert(table: string, rows: any[], onConflict?: string) {
+async function upsert(table: string, rows: any[], onConflict?: string, errors?: string[]) {
   if (!rows.length || !isSupabaseConfigured) return;
   const q = sb()!.from(table).upsert(rows, { onConflict, ignoreDuplicates: false });
   const { error } = await q;
-  if (error) console.warn(`[backend] upsert ${table} failed:`, error.message);
+  if (error) { console.warn(`[backend] upsert ${table} failed:`, error.message); errors?.push(`${table}: ${error.message}`); }
 }
-async function remove(table: string, ids: string[]) {
+async function remove(table: string, ids: string[], errors?: string[]) {
   if (!ids.length || !isSupabaseConfigured) return;
   const { error } = await sb()!.from(table).delete().in("id", ids);
-  if (error) console.warn(`[backend] delete ${table} failed:`, error.message);
+  if (error) { console.warn(`[backend] delete ${table} failed:`, error.message); errors?.push(`${table}: ${error.message}`); }
 }
 
 function diff<T extends { id: string }>(oldR: T[], newR: T[], key: (r: T) => string = (r) => r.id) {
@@ -362,12 +362,21 @@ function termId(period: string): string | null {
 let chain: Promise<void> = Promise.resolve();
 
 /** Queue a diff-sync so rapid `update()` calls never interleave. */
-export function sync(oldDB: DB, newDB: DB): void {
-  if (!isSupabaseConfigured) return;
-  chain = chain.then(() => doSync(oldDB, newDB)).catch((e) => console.warn("[backend] sync error", e));
+/**
+ * sync() queues onto a shared chain so writes apply in order, but each call
+ * gets its OWN errors array — concurrent update()s never bleed their error
+ * lists into each other. The returned promise resolves with exactly the
+ * errors this call's writes produced (empty array = everything landed).
+ */
+export function sync(oldDB: DB, newDB: DB): Promise<string[]> {
+  if (!isSupabaseConfigured) return Promise.resolve([]);
+  const errors: string[] = [];
+  const run = chain.then(() => doSync(oldDB, newDB, errors)).catch((e) => { console.warn("[backend] sync error", e); errors.push(String(e?.message ?? e)); });
+  chain = run;
+  return run.then(() => errors);
 }
 
-async function doSync(oldDB: DB, newDB: DB): Promise<void> {
+async function doSync(oldDB: DB, newDB: DB, errors: string[]): Promise<void> {
   const o = rowsOf(oldDB);
   const n = rowsOf(newDB);
 
@@ -381,13 +390,13 @@ async function doSync(oldDB: DB, newDB: DB): Promise<void> {
   ];
   for (const table of ordered) {
     const { up, del } = diff(o[table] ?? [], n[table] ?? []);
-    if (up.length) await upsert(table, up);
-    if (del.length) await remove(table, del);
+    if (up.length) await upsert(table, up, undefined, errors);
+    if (del.length) await remove(table, del, errors);
   }
 
   // settings → single schools row
   if (JSON.stringify(oldDB.settings) !== JSON.stringify(newDB.settings)) {
-    await upsert("schools", [{ id: SCHOOL_ID, name: newDB.settings.schoolName, motto: newDB.settings.motto }]);
+    await upsert("schools", [{ id: SCHOOL_ID, name: newDB.settings.schoolName, motto: newDB.settings.motto }], undefined, errors);
   }
 
   // marks (flattened triple-nested map) — keyed by structure|item|student
@@ -401,12 +410,13 @@ async function doSync(oldDB: DB, newDB: DB): Promise<void> {
   };
   {
     const { up, del } = diff(flatMarks(oldDB), flatMarks(newDB));
-    if (up.length) await upsert("assessment_marks", up.map(({ id: _id, ...r }) => r), "item_id,student_id");
+    if (up.length) await upsert("assessment_marks", up.map(({ id: _id, ...r }) => r), "item_id,student_id", errors);
     // deletes on marks: item_id+student combos removed
     if (del.length) {
       const combos = del.map((k) => k.split("|"));
       for (const [sid, iid, stid] of combos) {
-        await sb()!.from("assessment_marks").delete().eq("structure_id", sid).eq("item_id", iid).eq("student_id", stid);
+        const { error } = await sb()!.from("assessment_marks").delete().eq("structure_id", sid).eq("item_id", iid).eq("student_id", stid);
+        if (error) errors.push(`assessment_marks: ${error.message}`);
       }
     }
   }
@@ -421,10 +431,11 @@ async function doSync(oldDB: DB, newDB: DB): Promise<void> {
     for (const r of changedRegs) {
       const rid = regId(r);
       const regRow = regRows.find((x) => x.id === rid);
-      if (regRow) await upsert("attendance_registers", [regRow]);
+      if (regRow) await upsert("attendance_registers", [regRow], undefined, errors);
       const entries = Object.entries(r.marks).map(([stid, status]) => ({ id: `${rid}|${stid}`, register_id: rid, student_id: stid, status }));
-      await sb()!.from("attendance_entries").delete().eq("register_id", rid);
-      await upsert("attendance_entries", entries);
+      const { error: delErr } = await sb()!.from("attendance_entries").delete().eq("register_id", rid);
+      if (delErr) errors.push(`attendance_entries: ${delErr.message}`);
+      await upsert("attendance_entries", entries, undefined, errors);
     }
   }
 
@@ -432,17 +443,18 @@ async function doSync(oldDB: DB, newDB: DB): Promise<void> {
   for (const role of newDB.roles) {
     const before = oldDB.roles.find((r) => r.id === role.id);
     if (JSON.stringify(before?.permissions) !== JSON.stringify(role.permissions) && !role.permissions.includes("*")) {
-      await sb()!.from("role_permissions").delete().eq("role_def_id", role.id);
-      await upsert("role_permissions", role.permissions.map((p) => ({ role_def_id: role.id, permission_id: p })));
+      const { error: delErr } = await sb()!.from("role_permissions").delete().eq("role_def_id", role.id);
+      if (delErr) errors.push(`role_permissions: ${delErr.message}`);
+      await upsert("role_permissions", role.permissions.map((p) => ({ role_def_id: role.id, permission_id: p })), undefined, errors);
     }
   }
 
   // communication child tables
-  await syncReads("announcement_reads", oldDB.announcements, newDB.announcements, (a) => a.id, (a) => a.readBy ?? [], "announcement_id");
-  await syncParticipants(oldDB, newDB);
-  await syncMessages(oldDB, newDB);
-  await syncNotifications(oldDB, newDB);
-  await syncProfiles(oldDB, newDB);
+  await syncReads("announcement_reads", oldDB.announcements, newDB.announcements, (a) => a.id, (a) => a.readBy ?? [], "announcement_id", errors);
+  await syncParticipants(oldDB, newDB, errors);
+  await syncMessages(oldDB, newDB, errors);
+  await syncNotifications(oldDB, newDB, errors);
+  await syncProfiles(oldDB, newDB, errors);
 }
 
 function regId(r: AttendanceRecord) {
@@ -456,35 +468,36 @@ async function syncReads(
   getId: (x: any) => string,
   getReads: (x: any) => string[],
   fk: string,
+  errors: string[],
 ) {
   for (const item of newList) {
     const before = oldList.find((x) => getId(x) === getId(item));
     const now = getReads(item);
     const prev = before ? getReads(before) : [];
     const added = now.filter((p) => !prev.includes(p));
-    if (added.length) await upsert(table, added.map((p) => ({ [fk]: getId(item), profile_id: p })));
+    if (added.length) await upsert(table, added.map((p) => ({ [fk]: getId(item), profile_id: p })), undefined, errors);
   }
 }
 
-async function syncParticipants(oldDB: DB, newDB: DB) {
+async function syncParticipants(oldDB: DB, newDB: DB, errors: string[]) {
   for (const c of newDB.conversations) {
     const before = oldDB.conversations.find((x) => x.id === c.id);
     const added = c.participants.filter((p) => !(before?.participants ?? []).includes(p));
-    if (added.length) await upsert("conversation_participants", added.map((p) => ({ conversation_id: c.id, profile_id: p })));
+    if (added.length) await upsert("conversation_participants", added.map((p) => ({ conversation_id: c.id, profile_id: p })), undefined, errors);
   }
 }
 
-async function syncMessages(oldDB: DB, newDB: DB) {
+async function syncMessages(oldDB: DB, newDB: DB, errors: string[]) {
   const { up } = diff(oldDB.messages, newDB.messages);
   for (const m of up) {
-    await upsert("messages", [{ id: m.id, conversation_id: m.conversationId, sender_id: m.senderId, body: m.body, read_by: m.readBy, created_at: m.createdAt }]);
+    await upsert("messages", [{ id: m.id, conversation_id: m.conversationId, sender_id: m.senderId, body: m.body, read_by: m.readBy, created_at: m.createdAt }], undefined, errors);
   }
 }
 
-async function syncNotifications(oldDB: DB, newDB: DB) {
+async function syncNotifications(oldDB: DB, newDB: DB, errors: string[]) {
   const { up } = diff(oldDB.notifications, newDB.notifications);
   for (const nnt of up) {
-    await upsert("notifications", [{ id: nnt.id, profile_id: nnt.userId, type: nnt.type, title: nnt.title, body: nnt.body, is_read: nnt.read, created_at: nnt.at }]);
+    await upsert("notifications", [{ id: nnt.id, profile_id: nnt.userId, type: nnt.type, title: nnt.title, body: nnt.body, is_read: nnt.read, created_at: nnt.at }], undefined, errors);
   }
 }
 
@@ -493,7 +506,7 @@ async function syncNotifications(oldDB: DB, newDB: DB) {
  * NEVER a password — new accounts go through the create_user_account RPC and
  * passwords only ever touch Supabase Auth.
  */
-async function syncProfiles(oldDB: DB, newDB: DB) {
+async function syncProfiles(oldDB: DB, newDB: DB, errors: string[]) {
   for (const u of newDB.users) {
     const before = oldDB.users.find((x) => x.id === u.id);
     if (!before) {
@@ -501,31 +514,36 @@ async function syncProfiles(oldDB: DB, newDB: DB) {
       // (SECURITY DEFINER, gated by users.manage). The plaintext password is
       // handed to Supabase Auth once and never stored anywhere.
       if (!u.username?.trim() || !u.password) continue;
+      // A blank string is not the same as "no email" to SQL's coalesce() —
+      // send null so the RPC's own username@school fallback actually applies.
+      const email = u.email?.trim() ? u.email.trim() : null;
       const { data: newId, error } = await sb()!.rpc("create_user_account", {
         p_username: u.username.trim(), p_password: u.password, p_full_name: u.name,
         p_role: u.role, p_role_def_id: u.roleId,
         p_teacher_id: u.teacherId ?? null, p_student_id: u.studentId ?? null,
-        p_email: u.email ?? null, p_phone: u.phone ?? null,
+        p_email: email, p_phone: u.phone ?? null,
       });
-      if (error) { console.warn("[backend] create_user_account:", error.message); continue; }
+      if (error) { console.warn("[backend] create_user_account:", error.message); errors.push(`login for ${u.name}: ${error.message}`); continue; }
       if (u.role === "guardian" && u.childrenIds?.length && newId) {
-        await upsert("guardian_students", u.childrenIds.map((sid) => ({ guardian_id: newId as string, student_id: sid, relation: "Guardian" })));
+        await upsert("guardian_students", u.childrenIds.map((sid) => ({ guardian_id: newId as string, student_id: sid, relation: "Guardian" })), undefined, errors);
       }
       continue;
     }
     if (JSON.stringify(before) === JSON.stringify(u)) continue;
-    await sb()!.from("profiles").update({
+    const { error: updErr } = await sb()!.from("profiles").update({
       full_name: u.name, username: u.username, email: u.email, phone: u.phone,
       role: u.role, role_def_id: u.roleId, status: u.status,
       teacher_id: u.teacherId ?? null, student_id: u.studentId ?? null,
     }).eq("id", u.id);
+    if (updErr) errors.push(`profile ${u.name}: ${updErr.message}`);
     // guardian children → junction table replace
     if (u.role === "guardian") {
       const beforeKids = before.childrenIds ?? [];
       const nowKids = u.childrenIds ?? [];
       if (JSON.stringify(beforeKids) !== JSON.stringify(nowKids)) {
-        await sb()!.from("guardian_students").delete().eq("guardian_id", u.id);
-        await upsert("guardian_students", nowKids.map((sid) => ({ guardian_id: u.id, student_id: sid, relation: "Guardian" })));
+        const { error: delErr } = await sb()!.from("guardian_students").delete().eq("guardian_id", u.id);
+        if (delErr) errors.push(`guardian_students: ${delErr.message}`);
+        await upsert("guardian_students", nowKids.map((sid) => ({ guardian_id: u.id, student_id: sid, relation: "Guardian" })), undefined, errors);
       }
     }
   }

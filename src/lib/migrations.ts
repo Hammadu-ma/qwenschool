@@ -4,6 +4,7 @@ import m3 from "../../supabase/migrations/0003_seed_core.sql?raw";
 import m4 from "../../supabase/migrations/0004_seed_academics.sql?raw";
 import m5 from "../../supabase/migrations/0005_repair_auth_seed.sql?raw";
 import m6 from "../../supabase/migrations/0006_fee_payments.sql?raw";
+import m7 from "../../supabase/migrations/0007_fix_create_user_email.sql?raw";
 
 /**
  * The migration bundle ships inside the app as plain text. SQL DDL is not a
@@ -26,6 +27,7 @@ export const MIGRATIONS: MigrationFile[] = [
   { file: "0004_seed_academics.sql", title: "Assessments, marks, attendance, communication", sql: m4 },
   { file: "0005_repair_auth_seed.sql", title: "Auth repair — fixes GoTrue schema error on login", sql: m5 },
   { file: "0006_fee_payments.sql", title: "Fee payments — per-transaction method & reference history", sql: m6 },
+  { file: "0007_fix_create_user_email.sql", title: "Fix: blank email broke login for newly created accounts", sql: m7 },
 ];
 
 export const sqlEditorUrl = `https://supabase.com/dashboard/project/${PROJECT_REF}/sql/new`;

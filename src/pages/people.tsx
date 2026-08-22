@@ -136,14 +136,14 @@ export function StudentsPage({ scoped }: { scoped?: boolean }) {
 
 /* ================= register student (admin) ================= */
 function RegisterStudentModal({ onClose, onSaved }: { onClose: () => void; onSaved: (id: string) => void }) {
-  const { db, yearId, update, toast } = useApp();
+  const { db, yearId, update, toast, reconnect } = useApp();
   const [f, setF] = useState({
     firstName: "", middleName: "", lastName: "", gender: "Male" as "Male" | "Female", dob: "", address: "",
     gFather: "", gPhone: "", classId: "c8", sectionId: "", admDate: todayISO(), prevSchool: "",
     makeLogin: true, username: "", password: "stud123",
   });
   const set = (k: string, v: string | boolean) => setF((p) => ({ ...p, [k]: v }));
-  const save = () => {
+  const save = async () => {
     if (!f.firstName.trim() || !f.lastName.trim() || !f.dob || !f.sectionId) {
       toast("First name, last name, date of birth and section are required.", "warn");
       return;
@@ -152,13 +152,17 @@ function RegisterStudentModal({ onClose, onSaved }: { onClose: () => void; onSav
       toast("Login needs a username and password (or untick “Create login”).", "warn");
       return;
     }
+    if (f.makeLogin && f.password.trim().length < 6) {
+      toast("Password must be at least 6 characters.", "warn");
+      return;
+    }
     if (f.makeLogin && db.users.some((u) => u.username.toLowerCase() === f.username.trim().toLowerCase())) {
       toast("That username is already taken.", "warn");
       return;
     }
     const id = uid();
     const regNo = `ST-2026-${String(db.students.length + 1).padStart(3, "0")}`;
-    update((d) => {
+    const errors = await update((d) => {
       d.students.push({
         id, regId: regNo,
         firstName: f.firstName.trim(), middleName: f.middleName.trim(), lastName: f.lastName.trim(),
@@ -177,7 +181,12 @@ function RegisterStudentModal({ onClose, onSaved }: { onClose: () => void; onSav
         });
       }
     });
-    toast(`${f.firstName.trim()} ${f.lastName.trim()} registered${f.makeLogin ? " — student login created" : ""}.`);
+    if (errors.length) {
+      toast(`Saved, but something didn't sync: ${errors[0]}`, "warn");
+    } else {
+      toast(`${f.firstName.trim()} ${f.lastName.trim()} registered${f.makeLogin ? " — student login created" : ""}.`);
+      if (f.makeLogin) await reconnect(); // pull in the real Supabase-assigned account id
+    }
     onSaved(id);
   };
   return (
@@ -698,7 +707,7 @@ export function TeachersPage() {
 
 /* ================= families (admin) ================= */
 export function FamiliesPage() {
-  const { db, update, toast } = useApp();
+  const { db, update, toast, reconnect } = useApp();
   const [edit, setEdit] = useState<{ id?: string; name: string; username: string; password: string; phone: string; email: string; childrenIds: string[] } | null>(null);
   const guardians = db.users.filter((u) => u.role === "guardian");
   const enrolled = db.students.filter((s) => s.enrollment);
@@ -706,10 +715,12 @@ export function FamiliesPage() {
   const toggleChild = (id: string) =>
     setEdit((p) => p && { ...p, childrenIds: p.childrenIds.includes(id) ? p.childrenIds.filter((x) => x !== id) : [...p.childrenIds, id] });
 
-  const save = () => {
+  const save = async () => {
     if (!edit || !edit.name.trim() || !edit.username.trim() || !edit.password.trim()) { toast("Name, username and password are required.", "warn"); return; }
+    if (!edit.id && edit.password.trim().length < 6) { toast("Password must be at least 6 characters.", "warn"); return; }
     if (db.users.some((u) => u.username.toLowerCase() === edit.username.trim().toLowerCase() && u.id !== edit.id)) { toast("Username already taken.", "warn"); return; }
-    update((d) => {
+    const isNew = !edit.id;
+    const errors = await update((d) => {
       if (edit.id) {
         const u = d.users.find((x) => x.id === edit.id)!;
         u.name = edit.name.trim(); u.username = edit.username.trim(); u.password = edit.password.trim();
@@ -718,7 +729,12 @@ export function FamiliesPage() {
         d.users.push({ id: uid(), name: edit.name.trim(), username: edit.username.trim(), password: edit.password.trim(), role: "guardian", roleId: "guardian", status: "active", phone: edit.phone.trim(), email: edit.email.trim(), childrenIds: edit.childrenIds, createdAt: todayISO() });
       }
     });
-    toast(edit.id ? "Guardian updated." : "Guardian account created.");
+    if (errors.length) {
+      toast(`Saved, but something didn't sync: ${errors[0]}`, "warn");
+    } else {
+      toast(edit.id ? "Guardian updated." : "Guardian account created.");
+      if (isNew) await reconnect(); // pull in the real Supabase-assigned account id
+    }
     setEdit(null);
   };
 
@@ -797,7 +813,7 @@ export function FamiliesPage() {
 
 /* ================= user management (admin, req 16) ================= */
 export function UsersPage() {
-  const { db, currentUser, update, toast } = useApp();
+  const { db, currentUser, update, toast, reconnect } = useApp();
   const [edit, setEdit] = useState<User | "new" | null>(null);
 
   const blank: User = { id: "", name: "", username: "", password: "", role: "student", roleId: "student", status: "active", createdAt: todayISO() };
@@ -805,11 +821,13 @@ export function UsersPage() {
 
   const set = (patch: Partial<User>) => setEdit((p) => (p && p !== "new" ? { ...p, ...patch } : p === "new" ? { ...blank, ...patch } : p));
 
-  const save = () => {
+  const save = async () => {
     if (!draft) return;
     if (!draft.name.trim() || !draft.username.trim() || !draft.password.trim()) { toast("Name, username and password are required.", "warn"); return; }
+    if (!draft.id && draft.password.trim().length < 6) { toast("Password must be at least 6 characters.", "warn"); return; }
     if (db.users.some((u) => u.username.toLowerCase() === draft.username.trim().toLowerCase() && u.id !== draft.id)) { toast("Username already taken.", "warn"); return; }
-    update((d) => {
+    const isNew = !draft.id;
+    const errors = await update((d) => {
       if (draft.id) {
         const u = d.users.find((x) => x.id === draft.id)!;
         Object.assign(u, { ...draft, name: draft.name.trim(), username: draft.username.trim() });
@@ -817,7 +835,12 @@ export function UsersPage() {
         d.users.push({ ...draft, id: uid(), name: draft.name.trim(), username: draft.username.trim() });
       }
     });
-    toast(draft.id ? "User updated." : `User created with role “${draft.role}”.`);
+    if (errors.length) {
+      toast(`Saved, but something didn't sync: ${errors[0]}`, "warn");
+    } else {
+      toast(draft.id ? "User updated." : `User created with role "${draft.role}".`);
+      if (isNew) await reconnect(); // pull in the real Supabase-assigned account id
+    }
     setEdit(null);
   };
 

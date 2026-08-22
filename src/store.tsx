@@ -277,7 +277,12 @@ export interface Toast {
 
 interface Ctx {
   db: DB;
-  update: (fn: (d: DB) => void) => void;
+  /** Applies fn to a draft, commits it, and (in live mode) syncs to Supabase.
+   *  Returns the sync errors, if any — empty in local mode or when everything
+   *  landed. Most callers can ignore the return value; callers doing
+   *  something the person must know actually persisted (e.g. creating a
+   *  login) should await it and check. */
+  update: (fn: (d: DB) => void) => Promise<string[]>;
   resetData: () => void;
   yearId: string;
   setYear: (id: string) => void;
@@ -368,13 +373,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const modeRef = useRef(mode);
   modeRef.current = mode;
 
-  const update = (fn: (d: DB) => void) => {
+  const update = (fn: (d: DB) => void): Promise<string[]> => {
     const prev = dbRef.current;
     const draft = structuredClone(prev);
     fn(draft);
     dbRef.current = draft;
     setDb(draft);
-    if (modeRef.current === "live") sync(prev, draft); // PostgreSQL; RLS decides what lands
+    if (modeRef.current === "live") return sync(prev, draft); // PostgreSQL; RLS decides what lands
+    return Promise.resolve([]);
   };
 
   const login = async (username: string, password: string): Promise<{ ok: boolean; error?: string; user?: User }> => {

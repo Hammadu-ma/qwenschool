@@ -26,7 +26,7 @@ interface WizardProps {
 }
 
 export function RegistrationWizard({ student, onClose, onSaved }: WizardProps) {
-  const { db, currentUser, yearId, update, toast } = useApp();
+  const { db, currentUser, yearId, update, toast, reconnect } = useApp();
   const isEdit = !!student;
   const activeYear = getYear(db, yearId) ?? db.years.find((y) => y.active);
   const yrPrefix = activeYear ? activeYear.name.slice(0, 4) : "2026";
@@ -96,14 +96,15 @@ export function RegistrationWizard({ student, onClose, onSaved }: WizardProps) {
     if (items.length) toast(`${items.length} file(s) attached.`);
   };
 
-  const save = () => {
+  const save = async () => {
     if (!f.firstName.trim() || !f.lastName.trim() || !f.dob) { toast("Names and date of birth are required.", "warn"); return; }
     if (!f.classId || !f.sectionId) { toast("Pick a grade and section.", "warn"); return; }
     if (!isEdit && f.makeLogin && (!f.username.trim() || !f.password.trim())) { toast("Login needs a username and password.", "warn"); return; }
+    if (!isEdit && f.makeLogin && f.password.trim().length < 6) { toast("Password must be at least 6 characters.", "warn"); return; }
     if (!isEdit && f.makeLogin && db.users.some((u) => u.username.toLowerCase() === f.username.trim().toLowerCase())) { toast("That username is already taken.", "warn"); return; }
 
     const id = isEdit ? student!.id : uid();
-    update((d) => {
+    const errors = await update((d) => {
       const record: Student = {
         id,
         regId: f.regId.trim(),
@@ -133,7 +134,14 @@ export function RegistrationWizard({ student, onClose, onSaved }: WizardProps) {
         }
       }
     });
-    toast(isEdit ? "Student record updated." : `${f.firstName.trim()} ${f.lastName.trim()} registered${f.makeLogin ? " — login created" : ""}.`);
+
+    if (errors.length) {
+      // The student record may still have landed even if the login didn't (or vice versa) — say exactly what failed rather than a blanket success.
+      toast(`Saved, but something didn't sync: ${errors[0]}`, "warn");
+    } else {
+      toast(isEdit ? "Student record updated." : `${f.firstName.trim()} ${f.lastName.trim()} registered${f.makeLogin ? " — login created" : ""}.`);
+    }
+    if (!isEdit && f.makeLogin && errors.length === 0) await reconnect(); // pull the real Supabase-assigned account id in place of the local placeholder
     onSaved?.(id);
     onClose();
   };
