@@ -7,6 +7,18 @@ import { supabase, isSupabaseConfigured, usernameToEmail } from "./lib/supabase"
 import { hydrate, sync, setProfileId, loadProfileForSession, type DbMode } from "./lib/backend";
 
 export const uid = () => Math.random().toString(36).slice(2, 10);
+
+/** Turns update()'s raw sync-error list into one clear sentence. Login-account
+ *  failures (tagged "login for X: …" in backend.ts) are common and recoverable
+ *  — the record itself still saved — so they're worded differently from a
+ *  failure to save the record itself. */
+export function describeSyncErrors(errors: string[]): string {
+  if (!errors.length) return "";
+  const core = errors.find((e) => !e.startsWith("login for "));
+  if (core) return `Saved, but something didn't sync: ${core}`;
+  const loginMsg = errors[0].replace(/^login for [^:]+: /, "");
+  return `Saved — but the login account could not be created: ${loginMsg}`;
+}
 export const todayISO = () => new Date().toISOString().slice(0, 10);
 export const fmtDate = (isoStr: string) =>
   new Date(isoStr + (isoStr.length === 10 ? "T00:00:00" : "")).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });

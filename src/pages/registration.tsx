@@ -5,7 +5,7 @@ import {
   Printer, Trash2, Upload, User, Users, X,
 } from "lucide-react";
 import type { Student, StudentDoc } from "../types";
-import { getClass, getSection, getYear, sectionLabel, todayISO, uid, useApp } from "../store";
+import { describeSyncErrors, getClass, getSection, getYear, sectionLabel, todayISO, uid, useApp } from "../store";
 import { pushAudit } from "../rbac";
 import { Btn, Chip, Field, Modal, Panel, Select, TextArea, TextInput } from "../ui";
 
@@ -137,7 +137,7 @@ export function RegistrationWizard({ student, onClose, onSaved }: WizardProps) {
 
     if (errors.length) {
       // The student record may still have landed even if the login didn't (or vice versa) — say exactly what failed rather than a blanket success.
-      toast(`Saved, but something didn't sync: ${errors[0]}`, "warn");
+      toast(describeSyncErrors(errors), "warn");
     } else {
       toast(isEdit ? "Student record updated." : `${f.firstName.trim()} ${f.lastName.trim()} registered${f.makeLogin ? " — login created" : ""}.`);
     }

@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import type { Enrollment, Role, Student, User, UserStatus } from "../types";
 import {
-  assessmentCalc, attendanceStats, canSeeStudent, childrenOf, feeStats, fmtDate, fullName, getClass, getSection,
+  assessmentCalc, attendanceStats, canSeeStudent, childrenOf, describeSyncErrors, feeStats, fmtDate, fullName, getClass, getSection,
   getSubject, gradeFor, guardianOfStudent, homePathFor, ordinal, sectionLabel, sectionShort, shortName,
   studentAverage, studentOf, studentResults, structureRanks, teacherPairs, teacherStudentIds, teachersOfStudent,
   todayISO, uid, useApp,
@@ -182,7 +182,7 @@ function RegisterStudentModal({ onClose, onSaved }: { onClose: () => void; onSav
       }
     });
     if (errors.length) {
-      toast(`Saved, but something didn't sync: ${errors[0]}`, "warn");
+      toast(describeSyncErrors(errors), "warn");
     } else {
       toast(`${f.firstName.trim()} ${f.lastName.trim()} registered${f.makeLogin ? " — student login created" : ""}.`);
       if (f.makeLogin) await reconnect(); // pull in the real Supabase-assigned account id
@@ -730,7 +730,7 @@ export function FamiliesPage() {
       }
     });
     if (errors.length) {
-      toast(`Saved, but something didn't sync: ${errors[0]}`, "warn");
+      toast(describeSyncErrors(errors), "warn");
     } else {
       toast(edit.id ? "Guardian updated." : "Guardian account created.");
       if (isNew) await reconnect(); // pull in the real Supabase-assigned account id
@@ -836,7 +836,7 @@ export function UsersPage() {
       }
     });
     if (errors.length) {
-      toast(`Saved, but something didn't sync: ${errors[0]}`, "warn");
+      toast(describeSyncErrors(errors), "warn");
     } else {
       toast(draft.id ? "User updated." : `User created with role "${draft.role}".`);
       if (isNew) await reconnect(); // pull in the real Supabase-assigned account id
