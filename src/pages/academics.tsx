@@ -2,11 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Banknote, BookOpen, CalendarCheck2, Check, CheckCheck, CheckCircle2,
   ClipboardList, Clock as ClockIcon, Eye, FileBarChart2, Globe2, Layers,
-  Pencil, Plus, Printer, Receipt, RotateCcw, Save, Send, ShieldCheck, Table2, Tag, Trash2,
+  PenLine, Pencil, Plus, Printer, Receipt, RotateCcw, Save, Send, ShieldCheck, Table2, Tag, Trash2,
   Undo2, UserCheck, UserX, Wallet,
 } from "lucide-react";
 import type {
-  AssessmentItem, AssessmentStructure, Assignment, AttendanceStatus, FeeItem,
+  AssessmentItem, AssessmentStructure, Assignment, AttendanceStatus, FeeItem, Homework,
   SchoolClass, Section, Student, Submission, Subject, TimetableEntry,
 } from "../types";
 import {
@@ -1487,5 +1487,272 @@ function FeeLedgerModal({ student, canManage, onClose }: { student: Student; can
         </Modal>
       )}
     </Modal>
+  );
+}
+
+/* =========================================================================
+   HOMEWORK
+   Teacher/admin: set homework for a class/section/subject and see who
+   submitted. Student: view what's due and mark it done. Guardian: read-only
+   per child.
+   ========================================================================= */
+export function HomeworkPage() {
+  const { db, currentUser } = useApp();
+  const role = currentUser?.role ?? "admin";
+
+  if (role === "student") return <StudentHomework />;
+  if (role === "guardian") return <GuardianHomework />;
+
+  const isAdmin = role === "admin";
+  const canManage = hasPermission(db, currentUser, "homework.manage");
+  const pairs = teacherPairs(db, currentUser);
+
+  const [classId, setClassId] = useState("");
+  const cls = getClass(db, classId);
+  const [sectionId, setSectionId] = useState("");
+  const [edit, setEdit] = useState<Homework | "new" | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<Homework | null>(null);
+  const [openRoster, setOpenRoster] = useState<Homework | null>(null);
+
+  const scopedClassIds = isAdmin ? db.classes.map((c) => c.id) : [...new Set(pairs.map((p) => p.classId))];
+
+  const rows = db.homework
+    .filter((h) => scopedClassIds.includes(h.classId))
+    .filter((h) => (isAdmin ? true : pairs.some((p) => p.classId === h.classId && p.sectionId === h.sectionId && p.subjectIds.includes(h.subjectId))))
+    .filter((h) => !classId || h.classId === classId)
+    .filter((h) => !sectionId || h.sectionId === sectionId)
+    .sort((a, b) => b.due.localeCompare(a.due));
+
+  const { update, toast } = useApp();
+  const remove = (h: Homework) => {
+    update((d) => { d.homework = d.homework.filter((x) => x.id !== h.id); pushAudit(d, currentUser, "homework.delete", h.title); });
+    toast("Homework removed.");
+    setConfirmDelete(null);
+  };
+
+  return (
+    <div className="mx-auto max-w-5xl">
+      <PageHead kicker="Academics" title="Homework" sub="Set homework for a class & subject, and track who's submitted.">
+        <Field label="Class" className="w-36"><Select value={classId} onChange={(e) => { setClassId(e.target.value); setSectionId(""); }}><option value="">All</option>{scopedClassIds.map((id) => <option key={id} value={id}>{getClass(db, id)?.name}</option>)}</Select></Field>
+        <Field label="Section" className="w-28"><Select value={sectionId} onChange={(e) => setSectionId(e.target.value)} disabled={!classId}><option value="">All</option>{cls?.sections.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</Select></Field>
+        {canManage && <Btn variant="gold" onClick={() => setEdit("new")}><Plus className="h-4 w-4" /> Set homework</Btn>}
+      </PageHead>
+
+      <div className="space-y-2.5">
+        {rows.map((h) => {
+          const roster = studentsOf(db, h.classId, h.sectionId);
+          const submittedCount = roster.filter((s) => h.submitted.includes(s.id)).length;
+          const overdue = h.due < todayISO();
+          return (
+            <Panel key={h.id} className="anim-rise p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="flex items-center gap-2 font-display text-[14.5px] font-bold text-ink">
+                    {h.title}
+                    <Chip tone={overdue ? "rust" : "steel"}>{overdue ? "Overdue" : `Due ${fmtDate(h.due)}`}</Chip>
+                  </p>
+                  <p className="mt-0.5 text-[11.5px] text-soft">{sectionShort(db, h.classId, h.sectionId)} · {getSubject(db, h.subjectId)?.name} · issued {fmtDate(h.issued)}</p>
+                  {h.description && <p className="mt-1.5 text-[12.5px] text-ink">{h.description}</p>}
+                </div>
+                <div className="flex items-center gap-2">
+                  <Chip tone={submittedCount === roster.length && roster.length > 0 ? "pine" : "gold"}>{submittedCount}/{roster.length} submitted</Chip>
+                  <Btn size="sm" variant="ghost" onClick={() => setOpenRoster(h)}><Eye className="h-3.5 w-3.5" /> Roster</Btn>
+                  {canManage && (isAdmin || pairs.some((p) => p.classId === h.classId && p.sectionId === h.sectionId && p.subjectIds.includes(h.subjectId))) && (
+                    <>
+                      <button onClick={() => setEdit(h)} className="cursor-pointer rounded p-1.5 text-soft hover:bg-pine-100 hover:text-pine-700"><Pencil className="h-3.5 w-3.5" /></button>
+                      <button onClick={() => setConfirmDelete(h)} className="cursor-pointer rounded p-1.5 text-soft hover:bg-rust-100 hover:text-rust-600"><Trash2 className="h-3.5 w-3.5" /></button>
+                    </>
+                  )}
+                </div>
+              </div>
+            </Panel>
+          );
+        })}
+        {rows.length === 0 && <Panel className="anim-rise"><EmptyState icon={<PenLine className="h-5 w-5" />} title="No homework set yet" body="Set homework for a class & subject you teach." action={canManage ? <Btn onClick={() => setEdit("new")}><Plus className="h-4 w-4" /> Set homework</Btn> : undefined} /></Panel>}
+      </div>
+
+      {edit && <HomeworkModal existing={edit === "new" ? undefined : edit} teacherPairs={pairs} isAdmin={isAdmin} onClose={() => setEdit(null)} />}
+      {openRoster && <HomeworkRosterModal homework={openRoster} onClose={() => setOpenRoster(null)} canManage={canManage} />}
+      {confirmDelete && (
+        <Modal title={`Delete "${confirmDelete.title}"?`} onClose={() => setConfirmDelete(null)}
+          footer={<><Btn variant="ghost" onClick={() => setConfirmDelete(null)}>Cancel</Btn><Btn variant="danger" onClick={() => remove(confirmDelete)}><Trash2 className="h-4 w-4" /> Delete</Btn></>}>
+          <p className="text-[13px] text-ink">This can't be undone.</p>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function HomeworkModal({ existing, teacherPairs: pairs, isAdmin, onClose }: {
+  existing?: Homework; teacherPairs: { classId: string; sectionId: string; subjectIds: string[] }[]; isAdmin: boolean; onClose: () => void;
+}) {
+  const { db, yearId, update, toast, currentUser } = useApp();
+  const options = isAdmin
+    ? db.classes.flatMap((c) => c.sections.flatMap((s) => db.subjects.map((sub) => ({ classId: c.id, sectionId: s.id, subjectId: sub.id }))))
+    : pairs.flatMap((p) => p.subjectIds.map((sid) => ({ classId: p.classId, sectionId: p.sectionId, subjectId: sid })));
+
+  const key = (o: { classId: string; sectionId: string; subjectId: string }) => `${o.classId}|${o.sectionId}|${o.subjectId}`;
+  const [combo, setCombo] = useState(existing ? key({ classId: existing.classId, sectionId: existing.sectionId, subjectId: existing.subjectId }) : key(options[0] ?? { classId: "", sectionId: "", subjectId: "" }));
+  const [title, setTitle] = useState(existing?.title ?? "");
+  const [description, setDescription] = useState(existing?.description ?? "");
+  const [due, setDue] = useState(existing?.due ?? todayISO());
+
+  const save = () => {
+    if (!title.trim()) { toast("Give the homework a title.", "warn"); return; }
+    const [classId, sectionId, subjectId] = combo.split("|");
+    if (!classId) { toast("Choose a class, section and subject.", "warn"); return; }
+    update((d) => {
+      if (existing) {
+        const i = d.homework.findIndex((h) => h.id === existing.id);
+        if (i >= 0) d.homework[i] = { ...existing, classId, sectionId, subjectId, title: title.trim(), description: description.trim() || undefined, due };
+        pushAudit(d, currentUser, "homework.update", title.trim());
+      } else {
+        d.homework.push({ id: uid(), yearId, classId, sectionId, subjectId, title: title.trim(), description: description.trim() || undefined, issued: todayISO(), due, submitted: [] });
+        pushAudit(d, currentUser, "homework.create", title.trim());
+        const roster = studentsOf(d, classId, sectionId);
+        const recipients = d.users.filter((u) => u.status === "active" && (roster.some((s) => u.studentId === s.id) || (u.childrenIds ?? []).some((cid) => roster.some((s) => s.id === cid))));
+        pushNotifications(d, recipients.map((u) => u.id), "homework", "New homework", `${title.trim()} — due ${fmtDate(due)}.`);
+      }
+    });
+    toast(existing ? "Homework updated." : "Homework set.");
+    onClose();
+  };
+
+  return (
+    <Modal title={existing ? "Edit homework" : "Set homework"} onClose={onClose}
+      footer={<><Btn variant="ghost" onClick={onClose}>Cancel</Btn><Btn onClick={save}><Save className="h-4 w-4" /> Save</Btn></>}>
+      <Field label="Class · section · subject" required>
+        <Select value={combo} onChange={(e) => setCombo(e.target.value)}>
+          {options.length === 0 && <option value="">No teaching assignments found</option>}
+          {options.map((o) => <option key={key(o)} value={key(o)}>{sectionShort(db, o.classId, o.sectionId)} · {getSubject(db, o.subjectId)?.name}</option>)}
+        </Select>
+      </Field>
+      <Field label="Title" required className="mt-3"><TextInput value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Chapter 4 exercises" /></Field>
+      <Field label="Description" className="mt-3"><TextArea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Optional details…" /></Field>
+      <Field label="Due date" required className="mt-3"><TextInput type="date" value={due} onChange={(e) => setDue(e.target.value)} /></Field>
+    </Modal>
+  );
+}
+
+function HomeworkRosterModal({ homework, onClose, canManage }: { homework: Homework; onClose: () => void; canManage: boolean }) {
+  const { db, update, toast } = useApp();
+  const roster = studentsOf(db, homework.classId, homework.sectionId);
+
+  const toggle = (studentId: string) => {
+    if (!canManage) return;
+    update((d) => {
+      const h = d.homework.find((x) => x.id === homework.id);
+      if (!h) return;
+      if (h.submitted.includes(studentId)) h.submitted = h.submitted.filter((id) => id !== studentId);
+      else h.submitted.push(studentId);
+    });
+  };
+
+  return (
+    <Modal title={homework.title} kicker={`${sectionShort(db, homework.classId, homework.sectionId)} · due ${fmtDate(homework.due)}`} onClose={onClose} footer={<Btn variant="ghost" onClick={onClose}>Close</Btn>}>
+      <div className="space-y-1.5">
+        {roster.map((s) => {
+          const done = homework.submitted.includes(s.id);
+          return (
+            <div key={s.id} className="flex items-center justify-between rounded-lg border border-mist bg-card p-2.5">
+              <span className="flex items-center gap-2.5"><Avatar student={s} size={28} /><span className="text-[12.5px] font-bold text-ink">{shortName(s)}</span></span>
+              <button disabled={!canManage} onClick={() => toggle(s.id)} className={`cursor-pointer rounded-md border px-2.5 py-1 text-[11px] font-bold transition-all disabled:cursor-not-allowed ${done ? "border-pine-700 bg-pine-700 text-white" : "border-mist bg-paper text-soft hover:border-pine-300"}`}>
+                {done ? "Submitted" : "Not yet"}
+              </button>
+            </div>
+          );
+        })}
+        {roster.length === 0 && <p className="py-6 text-center text-[12.5px] text-soft">No students in this section.</p>}
+      </div>
+    </Modal>
+  );
+}
+
+/** Student: homework due for my class/section, with a self-serve "mark done". */
+function StudentHomework() {
+  const { db, currentUser, update, toast } = useApp();
+  const student = studentOf(db, currentUser);
+  if (!student?.enrollment) return <AccessDenied required="homework.view" reason="No enrollment on record." />;
+
+  const rows = db.homework
+    .filter((h) => h.classId === student.enrollment!.classId && h.sectionId === student.enrollment!.sectionId)
+    .sort((a, b) => a.due.localeCompare(b.due));
+
+  const toggle = (h: Homework) => {
+    update((d) => {
+      const x = d.homework.find((y) => y.id === h.id);
+      if (!x) return;
+      if (x.submitted.includes(student.id)) x.submitted = x.submitted.filter((id) => id !== student.id);
+      else x.submitted.push(student.id);
+    });
+  };
+
+  return (
+    <div className="mx-auto max-w-3xl">
+      <PageHead kicker="Academics" title="My homework" sub="Mark it done once you've submitted it in class." />
+      <div className="space-y-2.5">
+        {rows.map((h) => {
+          const done = h.submitted.includes(student.id);
+          const overdue = !done && h.due < todayISO();
+          return (
+            <Panel key={h.id} className="anim-rise p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="font-display text-[14px] font-bold text-ink">{h.title}</p>
+                  <p className="mt-0.5 text-[11.5px] text-soft">{getSubject(db, h.subjectId)?.name} · due {fmtDate(h.due)}</p>
+                  {h.description && <p className="mt-1.5 text-[12.5px] text-ink">{h.description}</p>}
+                </div>
+                <div className="flex items-center gap-2">
+                  {overdue && <Chip tone="rust">Overdue</Chip>}
+                  <Btn size="sm" variant={done ? "soft" : "gold"} onClick={() => toggle(h)}>
+                    <CheckCircle2 className="h-3.5 w-3.5" /> {done ? "Submitted" : "Mark done"}
+                  </Btn>
+                </div>
+              </div>
+            </Panel>
+          );
+        })}
+        {rows.length === 0 && <Panel className="anim-rise"><EmptyState icon={<PenLine className="h-5 w-5" />} title="No homework yet" body="Homework set by your teachers will appear here." /></Panel>}
+      </div>
+    </div>
+  );
+}
+
+/** Guardian: read-only, per child. */
+function GuardianHomework() {
+  const { db, currentUser } = useApp();
+  const kids = childrenOf(db, currentUser).filter((c) => c.enrollment);
+  const [selId, setSelId] = useState(kids[0]?.id ?? "");
+  const child = kids.find((k) => k.id === selId) ?? kids[0];
+  if (!child?.enrollment) return <AccessDenied required="homework.view" reason="No linked student record was found." />;
+
+  const rows = db.homework
+    .filter((h) => h.classId === child.enrollment!.classId && h.sectionId === child.enrollment!.sectionId)
+    .sort((a, b) => a.due.localeCompare(b.due));
+
+  return (
+    <div className="mx-auto max-w-3xl">
+      <PageHead kicker="Academics" title="Homework" sub="What's been set for your child's class.">
+        {kids.length > 1 && <Field label="Child" className="w-48"><Select value={selId} onChange={(e) => setSelId(e.target.value)}>{kids.map((k) => <option key={k.id} value={k.id}>{shortName(k)}</option>)}</Select></Field>}
+      </PageHead>
+      <div className="space-y-2.5">
+        {rows.map((h) => {
+          const done = h.submitted.includes(child.id);
+          return (
+            <Panel key={h.id} className="anim-rise p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="font-display text-[14px] font-bold text-ink">{h.title}</p>
+                  <p className="mt-0.5 text-[11.5px] text-soft">{getSubject(db, h.subjectId)?.name} · due {fmtDate(h.due)}</p>
+                  {h.description && <p className="mt-1.5 text-[12.5px] text-ink">{h.description}</p>}
+                </div>
+                <Chip tone={done ? "pine" : h.due < todayISO() ? "rust" : "gold"}>{done ? "Submitted" : h.due < todayISO() ? "Overdue" : "Pending"}</Chip>
+              </div>
+            </Panel>
+          );
+        })}
+        {rows.length === 0 && <Panel className="anim-rise"><EmptyState icon={<PenLine className="h-5 w-5" />} title="No homework yet" body="Homework set by teachers will appear here." /></Panel>}
+      </div>
+    </div>
   );
 }

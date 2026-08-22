@@ -10,7 +10,7 @@ import {
   FamiliesPage, ProfilePage, StudentProfilePage, StudentsPage, TeachersPage, UsersPage,
 } from "./pages/people";
 import {
-  AssignmentsPage, AttendancePage, ClassesPage, FeesPage, MarkEntryPage, ReportsPage, TimetablePage,
+  AssignmentsPage, AttendancePage, ClassesPage, FeesPage, HomeworkPage, MarkEntryPage, ReportsPage, TimetablePage,
 } from "./pages/academics";
 import {
   AnnouncementsPage, ContactsPage, EventsPage, MessagesPage, ModerationPage, NotificationsPage,
@@ -80,6 +80,7 @@ export default function App() {
             <Route path="/admin/timetable" element={<Guard roles={["admin"]} required="Administrator"><TimetablePage /></Guard>} />
             <Route path="/admin/marks" element={<Guard roles={["admin"]} required="Administrator"><MarkEntryPage /></Guard>} />
             <Route path="/admin/assignments" element={<Guard roles={["admin"]} required="Administrator"><AssignmentsPage /></Guard>} />
+            <Route path="/admin/homework" element={<Guard roles={["admin"]} required="Administrator"><HomeworkPage /></Guard>} />
             <Route path="/admin/reports" element={<Guard roles={["admin"]} required="Administrator"><ReportsPage /></Guard>} />
             <Route path="/admin/attendance" element={<Guard roles={["admin"]} required="Administrator"><AttendancePage /></Guard>} />
             <Route path="/admin/fees" element={<Guard roles={["admin"]} required="Administrator"><FeesPage /></Guard>} />
@@ -93,6 +94,7 @@ export default function App() {
             <Route path="/teacher/attendance" element={<Guard roles={["teacher"]} required="Teacher"><AttendancePage /></Guard>} />
             <Route path="/teacher/marks" element={<Guard roles={["teacher"]} required="Teacher"><MarkEntryPage /></Guard>} />
             <Route path="/teacher/assignments" element={<Guard roles={["teacher"]} required="Teacher"><AssignmentsPage /></Guard>} />
+            <Route path="/teacher/homework" element={<Guard roles={["teacher"]} required="Teacher"><HomeworkPage /></Guard>} />
 
             {/* student — own records only */}
             <Route path="/student/dashboard" element={<Guard roles={["student"]} required="Student"><StudentDashboard /></Guard>} />
@@ -100,6 +102,7 @@ export default function App() {
             <Route path="/student/grades" element={<Guard roles={["student"]} required="Student"><ReportsPage /></Guard>} />
             <Route path="/student/attendance" element={<Guard roles={["student"]} required="Student"><AttendancePage /></Guard>} />
             <Route path="/student/assignments" element={<Guard roles={["student"]} required="Student"><AssignmentsPage /></Guard>} />
+            <Route path="/student/homework" element={<Guard roles={["student"]} required="Student"><HomeworkPage /></Guard>} />
 
             {/* guardian — registered children only */}
             <Route path="/guardian/dashboard" element={<Guard roles={["guardian"]} required="Guardian"><GuardianDashboard /></Guard>} />
@@ -108,6 +111,7 @@ export default function App() {
             <Route path="/guardian/grades" element={<Guard roles={["guardian"]} required="Guardian"><ReportsPage /></Guard>} />
             <Route path="/guardian/attendance" element={<Guard roles={["guardian"]} required="Guardian"><AttendancePage /></Guard>} />
             <Route path="/guardian/assignments" element={<Guard roles={["guardian"]} required="Guardian"><AssignmentsPage /></Guard>} />
+            <Route path="/guardian/homework" element={<Guard roles={["guardian"]} required="Guardian"><HomeworkPage /></Guard>} />
 
             <Route path="*" element={<NotFound />} />
           </Route>

@@ -205,7 +205,7 @@ export function TeacherDashboard() {
           <Stat label="My class sections" value={pairs.length} icon={<Layers className="h-4.5 w-4.5" />} onClick={() => nav("/teacher/classes")} />
           <Stat label="My students" value={myStudents.size} icon={<Users className="h-4.5 w-4.5" />} tone="gold" onClick={() => nav("/teacher/students")} />
           <Stat label="Lessons today" value={myLessons.length} icon={<Clock className="h-4.5 w-4.5" />} tone="steel" onClick={() => nav("/teacher/classes")} />
-          <Stat label="Assignments set" value={myHomework.length} icon={<ClipboardList className="h-4.5 w-4.5" />} tone="pine" onClick={() => nav("/teacher/assignments")} />
+          <Stat label="Homework set" value={myHomework.length} icon={<ClipboardList className="h-4.5 w-4.5" />} tone="pine" onClick={() => nav("/teacher/homework")} />
         </div>
       </DayBanner>
 
@@ -322,7 +322,7 @@ export function StudentDashboard() {
         <div className="mt-4 grid grid-cols-2 gap-2.5 lg:grid-cols-4">
           <Stat label="Attendance" value={`${att.pct}%`} sub={`${att.present}P · ${att.late}L · ${att.absent}A`} icon={<CalendarCheck2 className="h-4.5 w-4.5" />} onClick={() => nav("/student/attendance")} />
           <Stat label="Average grade" value={avg != null ? `${avg}%` : "—"} icon={<FileBarChart2 className="h-4.5 w-4.5" />} tone="gold" onClick={() => nav("/student/grades")} />
-          <Stat label="Assignments due" value={due.length} sub={due.length ? "pending submission" : "all handed in"} icon={<NotebookPen className="h-4.5 w-4.5" />} tone={due.length ? "rust" : "pine"} onClick={() => nav("/student/assignments")} />
+          <Stat label="Homework due" value={due.length} sub={due.length ? "pending submission" : "all handed in"} icon={<NotebookPen className="h-4.5 w-4.5" />} tone={due.length ? "rust" : "pine"} onClick={() => nav("/student/homework")} />
           <Stat label="My teachers" value={myTeachers.length} icon={<GraduationCap className="h-4.5 w-4.5" />} tone="steel" onClick={() => nav("/student/classes")} />
         </div>
       </DayBanner>
@@ -411,6 +411,7 @@ export function StudentDashboard() {
                 <NotebookPen className="h-4 w-4 text-pine-600" />
                 <h2 className="font-display text-[15px] font-bold tracking-tight">To hand in</h2>
               </div>
+              <Btn variant="ghost" size="sm" onClick={() => nav("/student/homework")}>All <ArrowRight className="h-3.5 w-3.5" /></Btn>
             </div>
             <ul className="divide-y divide-mist/70">
               {due.slice(0, 4).map((h) => (
@@ -551,7 +552,7 @@ export function GuardianDashboard() {
                 <NotebookPen className="h-4 w-4 text-pine-600" />
                 <h2 className="font-display text-[15px] font-bold tracking-tight">Pending homework</h2>
               </div>
-              <Btn variant="ghost" size="sm" onClick={() => nav("/guardian/assignments")}>All <ArrowRight className="h-3.5 w-3.5" /></Btn>
+              <Btn variant="ghost" size="sm" onClick={() => nav("/guardian/homework")}>All <ArrowRight className="h-3.5 w-3.5" /></Btn>
             </div>
             <ul className="divide-y divide-mist/70">
               {due.slice(0, 4).map((h) => (
