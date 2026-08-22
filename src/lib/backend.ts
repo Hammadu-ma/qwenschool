@@ -323,11 +323,11 @@ function rowsOf(db: DB) {
       admission_date: s.admission.date, previous_school: s.admission.previousSchool, admission_type: s.admission.type,
       photo_path: s.photo ?? null,
     })),
-    enrollments: db.students.flatMap((s) => s.history.map((h, i) => ({
+    enrollments: db.students.flatMap((s) => s.history.map((h) => ({
       id: `${s.id}|${h.yearId}`, student_id: s.id, year_id: h.yearId, class_id: h.classId,
       section_id: h.sectionId, roll_number: h.rollNumber ?? null,
       status: h.status ?? (s.enrollment?.yearId === h.yearId ? "active" : "active"),
-      enrolled_on: h.enrolledOn ?? null, _i: i,
+      enrolled_on: h.enrolledOn ?? null,
     }))),
     student_documents: db.students.flatMap((s) => s.documents.map((d) => ({
       id: d.id, student_id: s.id, name: d.name, kind: d.kind, size: d.size, doc_date: d.date, storage_path: null,
