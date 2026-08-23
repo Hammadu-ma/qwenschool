@@ -21,8 +21,9 @@ All schema, RLS, functions and seed data live in `supabase/migrations/`:
 | `0005_repair_auth_seed.sql` | Fixes a GoTrue "500 querying schema" error some Supabase projects hit on login |
 | `0006_fee_payments.sql` | Adds per-transaction payment history (method, reference, bank) to fee items |
 | `0007_fix_create_user_email.sql` | Fixes new accounts getting an unusable login email when no personal email was given |
+| `0008_fix_auth_token_columns.sql` | Fixes a 500 on login for accounts created after registration (missing auth token columns) |
 
-**Fastest — Supabase CLI (recommended):** applies all 7 files in one command, no browser
+**Fastest — Supabase CLI (recommended):** applies all 8 files in one command, no browser
 copy-paste at all.
 ```bash
 supabase login
@@ -32,7 +33,7 @@ supabase db push
 
 **No CLI available — in-app console, one paste:** the login page shows a "Connect the live
 database" panel when the schema isn't detected yet. Open the **Guided** tab and click
-**"Copy all 7 migrations as one script"** — it's every file concatenated in order, each wrapped
+**"Copy all 8 migrations as one script"** — it's every file concatenated in order, each wrapped
 in its own transaction, so it's a single copy → paste into the SQL Editor → click Run, instead of
 repeating that seven times. Then click **Re-check & connect**.
 

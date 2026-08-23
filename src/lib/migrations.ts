@@ -5,6 +5,7 @@ import m4 from "../../supabase/migrations/0004_seed_academics.sql?raw";
 import m5 from "../../supabase/migrations/0005_repair_auth_seed.sql?raw";
 import m6 from "../../supabase/migrations/0006_fee_payments.sql?raw";
 import m7 from "../../supabase/migrations/0007_fix_create_user_email.sql?raw";
+import m8 from "../../supabase/migrations/0008_fix_auth_token_columns.sql?raw";
 
 /**
  * The migration bundle ships inside the app as plain text. SQL DDL is not a
@@ -40,6 +41,7 @@ export const MIGRATIONS: MigrationFile[] = [
   { file: "0005_repair_auth_seed.sql", title: "Auth repair — fixes GoTrue schema error on login", sql: m5 },
   { file: "0006_fee_payments.sql", title: "Fee payments — per-transaction method & reference history", sql: m6 },
   { file: "0007_fix_create_user_email.sql", title: "Fix: blank email broke login for newly created accounts", sql: m7 },
+  { file: "0008_fix_auth_token_columns.sql", title: "Fix: 500 on login for accounts created after registration (auth token columns)", sql: m8 },
 ];
 
 /**
