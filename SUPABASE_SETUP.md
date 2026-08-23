@@ -18,28 +18,34 @@ All schema, RLS, functions and seed data live in `supabase/migrations/`:
 | `0002_rls_functions.sql` | Authorization helpers, RLS policies, mark-workflow + audit triggers, privileged RPCs |
 | `0003_seed_core.sql` | School, years, classes/sections, subjects, teachers, students, enrollments, roles, **auth users** |
 | `0004_seed_academics.sql` | Assessment structures, marks, submissions, attendance, fees, timetable, homework, communication |
+| `0005_repair_auth_seed.sql` | Fixes a GoTrue "500 querying schema" error some Supabase projects hit on login |
+| `0006_fee_payments.sql` | Adds per-transaction payment history (method, reference, bank) to fee items |
+| `0007_fix_create_user_email.sql` | Fixes new accounts getting an unusable login email when no personal email was given |
 
-**Option A — In-app console (fastest).** Until the schema exists, the login page shows a
-"Connect the live database" panel:
-
-1. **Automatic** — paste your **service_role key** (memory only, never stored or bundled) and
-   click *Apply 4 migrations*. The browser POSTs each file to the Supabase Management API and
-   shows per-file progress.
-2. **Re-check & connect** — the app re-probes, hydrates from PostgreSQL and flips to live mode.
-
-If the browser blocks the direct call, use the **Guided** tab to copy each file into the SQL Editor.
-
-**Option B — Supabase CLI:**
+**Fastest — Supabase CLI (recommended):** applies all 7 files in one command, no browser
+copy-paste at all.
 ```bash
 supabase login
 supabase link --project-ref nrahbfmajwdgphmdllgm
 supabase db push
 ```
 
-**Option C — Dashboard:** open *SQL Editor* and run the four files **in order** (0001 → 0004).
+**No CLI available — in-app console, one paste:** the login page shows a "Connect the live
+database" panel when the schema isn't detected yet. Open the **Guided** tab and click
+**"Copy all 7 migrations as one script"** — it's every file concatenated in order, each wrapped
+in its own transaction, so it's a single copy → paste into the SQL Editor → click Run, instead of
+repeating that seven times. Then click **Re-check & connect**.
 
-The migrations are idempotent (`if not exists` / `on conflict do nothing`) and never drop data.
-They run as the `postgres` role, which is what lets `0003` create real `auth.users` rows.
+If you need to debug which specific file failed, the same panel has a "run them one at a time
+instead" toggle that copies each file individually.
+
+The **Automatic** tab (paste a service_role key, the app calls the Management API directly) is
+also available, but many browsers block that call outright (CORS) — the combined-script option
+above is the more reliable path for most people and never requires the service_role key to touch
+the browser at all.
+
+**Every path is idempotent** (`if not exists` / `on conflict do nothing`) and never drops data —
+safe to re-run if you're not sure what already applied.
 
 > The seed creates working Auth accounts (bcrypt-hashed passwords, proper identities), so
 > sign-in works immediately after applying — no separate bootstrap or service-key script needed.

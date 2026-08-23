@@ -5,7 +5,7 @@ import { homePathFor, useApp } from "../store";
 import { Btn, Chip, RoleBadge } from "../ui";
 import type { Role } from "../types";
 import { applyMigrations } from "../lib/backend";
-import { MIGRATIONS, sqlEditorUrl, PROJECT_REF } from "../lib/migrations";
+import { MIGRATIONS, COMBINED_SQL, sqlEditorUrl, PROJECT_REF } from "../lib/migrations";
 
 const DEMO: { role: Role; label: string; name: string; username: string; password: string; icon: React.ReactNode; desc: string }[] = [
   { role: "admin", label: "Super Admin", name: "Dr. Selam Bekele", username: "root", password: "root123", icon: <ShieldCheck className="h-4 w-4" />, desc: "Roles & permissions" },
@@ -66,6 +66,7 @@ function SetupConsole({ onConnected }: { onConnected: () => void }) {
     try { await navigator.clipboard.writeText(sql); setCopied(file); setTimeout(() => setCopied(null), 1600); }
     catch { setNotice({ tone: "warn", text: "Clipboard blocked — select the file in supabase/migrations and copy manually." }); }
   };
+  const [showEach, setShowEach] = useState(false);
 
   const done = MIGRATIONS.filter((m) => steps[m.file] === "ok").length;
 
@@ -112,13 +113,27 @@ function SetupConsole({ onConnected }: { onConnected: () => void }) {
               </div>
               <Btn variant="gold" onClick={runAuto} disabled={busy} className="w-full">
                 {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
-                {busy ? `Applying… ${done}/${MIGRATIONS.length}` : "Apply 4 migrations"}
+                {busy ? `Applying… ${done}/${MIGRATIONS.length}` : `Apply ${MIGRATIONS.length} migrations`}
               </Btn>
             </div>
           ) : (
             <div className="mt-4 space-y-2">
-              <p className="text-[11.5px] leading-relaxed text-pine-300">Open the <a href={sqlEditorUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-bold text-gold-300 underline-offset-2 hover:underline">SQL Editor <ExternalLink className="h-3 w-3" /></a> and paste each file in order, running one at a time:</p>
-              {MIGRATIONS.map((m, i) => (
+              <p className="text-[11.5px] leading-relaxed text-pine-300">Open the <a href={sqlEditorUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-bold text-gold-300 underline-offset-2 hover:underline">SQL Editor <ExternalLink className="h-3 w-3" /></a>, paste, and click Run — once:</p>
+              <button onClick={() => copy("__combined__", COMBINED_SQL)} className="flex w-full cursor-pointer items-center gap-3 rounded-lg border border-gold-400/40 bg-gold-400/10 px-3.5 py-3 text-left transition-colors hover:bg-gold-400/15">
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gold-400 text-pine-950">
+                  {copied === "__combined__" ? <CheckCircle2 className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block font-mono text-[12px] font-bold text-white">{copied === "__combined__" ? "Copied — paste it into the SQL Editor" : `Copy all ${MIGRATIONS.length} migrations as one script`}</span>
+                  <span className="block text-[10.5px] text-pine-400">One paste, one Run — instead of {MIGRATIONS.length} separate copy/paste/run cycles.</span>
+                </span>
+              </button>
+
+              <button onClick={() => setShowEach((v) => !v)} className="cursor-pointer text-[11px] font-semibold text-pine-400 underline-offset-2 hover:text-pine-200 hover:underline">
+                {showEach ? "Hide individual files" : "Prefer to run them one at a time instead? (for troubleshooting)"}
+              </button>
+
+              {showEach && MIGRATIONS.map((m, i) => (
                 <div key={m.file} className="flex items-center gap-2.5 rounded-lg border border-pine-800 bg-pine-900/50 px-3 py-2">
                   <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-pine-800 font-mono text-[10px] font-bold text-gold-300">{i + 1}</span>
                   <span className="min-w-0 flex-1">

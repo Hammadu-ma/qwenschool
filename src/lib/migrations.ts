@@ -30,4 +30,14 @@ export const MIGRATIONS: MigrationFile[] = [
   { file: "0007_fix_create_user_email.sql", title: "Fix: blank email broke login for newly created accounts", sql: m7 },
 ];
 
+/**
+ * All migrations concatenated in order, each wrapped in its own transaction
+ * and separated by a marker comment. One paste, one "Run" click in the SQL
+ * Editor instead of copying and running each file individually — the guided
+ * path's whole reason for being slow.
+ */
+export const COMBINED_SQL = MIGRATIONS
+  .map((m) => `-- ============================================================\n-- ${m.file} — ${m.title}\n-- ============================================================\nbegin;\n\n${m.sql.trim()}\n\ncommit;\n`)
+  .join("\n\n");
+
 export const sqlEditorUrl = `https://supabase.com/dashboard/project/${PROJECT_REF}/sql/new`;
