@@ -12,7 +12,19 @@ import m7 from "../../supabase/migrations/0007_fix_create_user_email.sql?raw";
  * keys are NEVER part of this bundle; they are typed into the setup console
  * at runtime and held in memory only.
  */
-export const PROJECT_REF = "nrahbfmajwdgphmdllgm";
+import { supabaseProjectUrl } from "./supabase";
+
+/**
+ * The project ref is parsed from whatever Supabase URL is actually
+ * configured (VITE_SUPABASE_URL) — never hardcoded. Getting this wrong meant
+ * "Apply migrations" and the SQL Editor link silently pointed at the wrong
+ * project whenever someone connected their own Supabase project instead of
+ * the shared demo one, making the in-app setup console a dead end for them.
+ */
+export const PROJECT_REF = (() => {
+  const m = supabaseProjectUrl?.match(/^https?:\/\/([a-z0-9]+)\.supabase\.co/i);
+  return m?.[1] ?? "";
+})();
 
 export interface MigrationFile {
   file: string;
