@@ -5,6 +5,7 @@ import type {
 import { buildSeed } from "./data/seed";
 import { supabase, isSupabaseConfigured, usernameToEmail } from "./lib/supabase";
 import { hydrate, sync, setProfileId, loadProfileForSession, type DbMode } from "./lib/backend";
+import { loadCachedDb, saveCachedDb, clearCachedDb } from "./lib/dbCache";
 
 export const uid = () => Math.random().toString(36).slice(2, 10);
 
@@ -317,27 +318,27 @@ interface Ctx {
 const AppCtx = createContext<Ctx | null>(null);
 
 export function AppProvider({ children }: { children: ReactNode }) {
-  const [db, setDb] = useState<DB>(() => buildSeed());
-  const [ready, setReady] = useState(false);
-  const [mode, setMode] = useState<DbMode>("off");
+  const cached = useMemo(() => (isSupabaseConfigured ? loadCachedDb() : null), []);
+  const [db, setDb] = useState<DB>(() => cached ?? buildSeed());
+  // A cache hit means we can paint immediately — the real fetch still runs
+  // in the background and silently replaces this the moment it lands.
+  const [ready, setReady] = useState(!!cached);
+  const [mode, setMode] = useState<DbMode>(cached ? "live" : "off");
   const [schemaMissing, setSchemaMissing] = useState(false);
   const [sessionUserId, setSessionUserId] = useState<string | null>(null);
-  const [yearId, setYearId] = useState("");
+  const [yearId, setYearId] = useState(() => cached ? (cached.years.find((y) => y.active)?.id ?? cached.years[0]?.id ?? "") : "");
   const [toastState, setToastState] = useState<Toast | null>(null);
   const dbRef = useRef(db);
 
-  /* Boot: hydrate from Supabase (RLS-filtered), then restore the Auth session. */
+  /* Boot: check the session first (a local token read, not a network round
+   * trip in the common case) so — combined with a cache hit — we can paint
+   * the correct screen (dashboard or login) immediately. hydrate() then
+   * refreshes quietly in the background; no visible reconnect, the data
+   * just becomes current a moment later. */
   useEffect(() => {
     let mounted = true;
     (async () => {
-      const { db: loaded, mode: m, schemaMissing: missing } = await hydrate();
-      if (!mounted) return;
-      dbRef.current = loaded;
-      setDb(loaded);
-      setMode(m);
-      setSchemaMissing(missing);
-      setYearId(loaded.years.find((y) => y.active)?.id ?? loaded.years[0]?.id ?? "");
-      if (m === "live" && isSupabaseConfigured && supabase) {
+      if (isSupabaseConfigured && supabase) {
         const { data } = await supabase.auth.getSession();
         const uid = data.session?.user?.id ?? null;
         if (uid) { setSessionUserId(uid); setProfileId(uid); }
@@ -347,6 +348,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
           setProfileId(id);
         });
       }
+      if (cached) setReady(true); // we already know what to show — no spinner
+
+      const { db: loaded, mode: m, schemaMissing: missing } = await hydrate();
+      if (!mounted) return;
+      dbRef.current = loaded;
+      setDb(loaded);
+      setMode(m);
+      setSchemaMissing(missing);
+      setYearId(loaded.years.find((y) => y.active)?.id ?? loaded.years[0]?.id ?? "");
+      if (m === "live") saveCachedDb(loaded); else clearCachedDb();
       setReady(true);
     })();
     return () => { mounted = false; };
@@ -424,6 +435,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     supabase?.auth.signOut();
     setSessionUserId(null);
     setProfileId(null);
+    clearCachedDb();
   };
 
   const toast = (msg: string, tone: "ok" | "warn" = "ok") => setToastState({ id: Date.now(), msg, tone });
