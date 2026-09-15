@@ -191,7 +191,7 @@ export async function hydrate(): Promise<{ db: DB; mode: DbMode; schemaMissing: 
     submittedBy: s.submitted_by, submittedAt: s.submitted_at,
     approvedBy: s.approved_by, approvedAt: s.approved_at,
     returnedBy: s.returned_by, returnedAt: s.returned_at, returnReason: s.return_reason,
-    publishedBy: s.published_by, publishedAt: s.published_at,
+    publishedBy: s.published_by, publishedAt: s.published_at, reopenReason: s.reopen_reason,
   }));
 
   if (gradeBands) db.grading = (gradeBands as any[]).sort((a, b) => a.sort - b.sort)
@@ -339,7 +339,7 @@ function rowsOf(db: DB) {
       submitted_by: s.submittedBy, submitted_at: s.submittedAt,
       approved_by: s.approvedBy, approved_at: s.approvedAt,
       returned_by: s.returnedBy, returned_at: s.returnedAt, return_reason: s.returnReason,
-      published_by: s.publishedBy, published_at: s.publishedAt,
+      published_by: s.publishedBy, published_at: s.publishedAt, reopen_reason: s.reopenReason ?? null,
     })),
     grade_bands: db.grading.map((g, i) => ({ id: `gb${i + 1}`, school_id: SCHOOL_ID, min_pct: g.min, max_pct: g.max, grade: g.grade, remark: g.remark, sort: i })),
     fee_items: db.fees.map((f) => ({ id: f.id, student_id: f.studentId, label: f.label, amount: f.amount, paid: f.paid, due_date: f.due, payments: f.payments ?? [] })),
@@ -410,7 +410,7 @@ async function doSync(oldDB: DB, newDB: DB, errors: string[]): Promise<void> {
   };
   {
     const { up, del } = diff(flatMarks(oldDB), flatMarks(newDB));
-    if (up.length) await upsert("assessment_marks", up.map(({ id: _id, ...r }) => r), "item_id,student_id", errors);
+    if (up.length) await upsert("assessment_marks", up, "item_id,student_id", errors);
     // deletes on marks: item_id+student combos removed
     if (del.length) {
       const combos = del.map((k) => k.split("|"));

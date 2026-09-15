@@ -4,10 +4,10 @@ import {
   Camera, Check, ChevronLeft, ChevronRight, CreditCard, Download, FileText, GraduationCap, ImagePlus,
   Printer, Trash2, Upload, User, Users, X,
 } from "lucide-react";
-import type { Student, StudentDoc } from "../types";
+import type { Student, StudentDoc, User as UserAccount } from "../types";
 import { describeSyncErrors, getClass, getSection, getYear, sectionLabel, todayISO, uid, useApp } from "../store";
 import { pushAudit } from "../rbac";
-import { Btn, Chip, Field, Modal, Panel, Select, TextArea, TextInput } from "../ui";
+import { Btn, Chip, Field, Modal, Panel, Select, TextArea, TextInput, UsernameConflictModal } from "../ui";
 
 const readAsDataUrl = (file: File) =>
   new Promise<string>((resolve, reject) => {
@@ -96,14 +96,12 @@ export function RegistrationWizard({ student, onClose, onSaved }: WizardProps) {
     if (items.length) toast(`${items.length} file(s) attached.`);
   };
 
-  const save = async () => {
-    if (!f.firstName.trim() || !f.lastName.trim() || !f.dob) { toast("Names and date of birth are required.", "warn"); return; }
-    if (!f.classId || !f.sectionId) { toast("Pick a grade and section.", "warn"); return; }
-    if (!isEdit && f.makeLogin && (!f.username.trim() || !f.password.trim())) { toast("Login needs a username and password.", "warn"); return; }
-    if (!isEdit && f.makeLogin && f.password.trim().length < 6) { toast("Password must be at least 6 characters.", "warn"); return; }
-    const loginUsername = f.username.trim().toLowerCase(); // normalize now: login always looks up the lowercase form
-    if (!isEdit && f.makeLogin && db.users.some((u) => u.username.toLowerCase() === loginUsername)) { toast("That username is already taken.", "warn"); return; }
+  const [conflict, setConflict] = useState<UserAccount | null>(null);
 
+  // Does the actual write — student record, plus a login with the given
+  // credentials if requested. replaceId, if set, drops that existing user
+  // first (used when the admin chooses "replace" on a username conflict).
+  const finalizeSave = async (loginUsername?: string, loginPassword?: string, replaceId?: string) => {
     const id = isEdit ? student!.id : uid();
     const errors = await update((d) => {
       const record: Student = {
@@ -127,9 +125,16 @@ export function RegistrationWizard({ student, onClose, onSaved }: WizardProps) {
       } else {
         d.students.push(record);
         pushAudit(d, currentUser, "student.register", `${record.firstName} ${record.lastName}`, `Admitted to ${sectionLabel(db, f.classId, f.sectionId)}`);
-        if (f.makeLogin) {
+        if (loginUsername && loginPassword) {
+          if (replaceId) {
+            const ridx = d.users.findIndex((u) => u.id === replaceId);
+            if (ridx >= 0) {
+              d.users.splice(ridx, 1);
+              pushAudit(d, currentUser, "user.replace", record.firstName + " " + record.lastName, `Replaced login @${loginUsername}`);
+            }
+          }
           d.users.push({
-            id: uid(), name: `${record.firstName} ${record.lastName}`, username: loginUsername, password: f.password.trim(),
+            id: uid(), name: `${record.firstName} ${record.lastName}`, username: loginUsername, password: loginPassword,
             role: "student", roleId: "student", status: "active", studentId: id, email: record.email, createdAt: todayISO(),
           });
         }
@@ -140,16 +145,33 @@ export function RegistrationWizard({ student, onClose, onSaved }: WizardProps) {
       // The student record may still have landed even if the login didn't (or vice versa) — say exactly what failed rather than a blanket success.
       toast(describeSyncErrors(errors), "warn");
     } else {
-      toast(isEdit ? "Student record updated." : `${f.firstName.trim()} ${f.lastName.trim()} registered${f.makeLogin ? " — login created" : ""}.`);
+      toast(isEdit ? "Student record updated." : `${f.firstName.trim()} ${f.lastName.trim()} registered${loginUsername ? " — login created" : ""}.`);
     }
-    if (!isEdit && f.makeLogin && errors.length === 0) await reconnect(); // pull the real Supabase-assigned account id in place of the local placeholder
+    if (!isEdit && loginUsername && errors.length === 0) await reconnect(); // pull the real Supabase-assigned account id in place of the local placeholder
     onSaved?.(id);
     onClose();
+  };
+
+  const save = async () => {
+    if (!f.firstName.trim() || !f.lastName.trim() || !f.dob) { toast("Names and date of birth are required.", "warn"); return; }
+    if (!f.classId || !f.sectionId) { toast("Pick a grade and section.", "warn"); return; }
+    if (!isEdit && f.makeLogin && (!f.username.trim() || !f.password.trim())) { toast("Login needs a username and password.", "warn"); return; }
+    if (!isEdit && f.makeLogin && f.password.trim().length < 6) { toast("Password must be at least 6 characters.", "warn"); return; }
+    const loginUsername = f.username.trim().toLowerCase(); // normalize now: login always looks up the lowercase form
+
+    if (!isEdit && f.makeLogin) {
+      const existing = db.users.find((u) => u.username.toLowerCase() === loginUsername);
+      if (existing) { setConflict(existing); return; }
+      await finalizeSave(loginUsername, f.password.trim());
+    } else {
+      await finalizeSave();
+    }
   };
 
   const canNext = stepValid;
 
   return (
+    <>
     <Modal
       title={isEdit ? `Edit ${student!.firstName} ${student!.lastName}` : "Register new student"}
       kicker={isEdit ? "Update the permanent record — history is preserved" : "One permanent record, reused everywhere"}
@@ -332,6 +354,22 @@ export function RegistrationWizard({ student, onClose, onSaved }: WizardProps) {
         </div>
       )}
     </Modal>
+    {conflict && (
+      <UsernameConflictModal
+        existing={conflict}
+        username={f.username.trim().toLowerCase()}
+        password={f.password.trim()}
+        onCancel={() => setConflict(null)}
+        onReplace={async () => { const c = conflict; setConflict(null); await finalizeSave(f.username.trim().toLowerCase(), f.password.trim(), c!.id); }}
+        onUseNew={async (u, p) => {
+          const other = db.users.find((x) => x.username.toLowerCase() === u);
+          if (other) { setConflict(other); return; }
+          setConflict(null);
+          await finalizeSave(u, p);
+        }}
+      />
+    )}
+    </>
   );
 }
 

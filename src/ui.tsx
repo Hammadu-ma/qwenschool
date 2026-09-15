@@ -1,6 +1,6 @@
-import { useEffect, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from "react";
+import { useEffect, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from "react";
 import { X } from "lucide-react";
-import type { Role, Student } from "./types";
+import type { Role, Student, User } from "./types";
 import { initials } from "./store";
 
 /* ================= primitives ================= */
@@ -225,6 +225,64 @@ export function PageHead({ kicker, title, sub, children }: { kicker: string; tit
 
 export const thCls = () => "px-3 py-2.5 text-left text-[10.5px] font-bold uppercase tracking-[0.1em] text-soft";
 export const tdCls = () => "px-3 py-2.5 text-[13px]";
+
+/* ================= username conflict resolution =================
+   Shown instead of a flat "username already taken" toast wherever a login
+   is created (student registration, guardian, quick-add, admin users page).
+   Lets the admin pick how to resolve it rather than just bouncing them
+   back to retype something. */
+export function UsernameConflictModal({
+  existing, username, password, onCancel, onReplace, onUseNew,
+}: {
+  existing: User;
+  username: string;
+  password: string;
+  onCancel: () => void;
+  onReplace: () => void;
+  onUseNew: (username: string, password: string) => void;
+}) {
+  const [u, setU] = useState(username);
+  const [p, setP] = useState(password);
+  const valid = u.trim().length > 0 && p.trim().length >= 6 && u.trim().toLowerCase() !== username.toLowerCase();
+  return (
+    <Modal title="Username already taken" kicker="Choose how to resolve it" onClose={onCancel}>
+      <div className="space-y-4">
+        <p className="text-[13px] text-soft">
+          <span className="rounded bg-paper px-1.5 py-0.5 font-mono font-bold text-ink">@{username}</span> is already used by{" "}
+          <span className="font-bold text-ink">{existing.name}</span>{" "}
+          <span className="text-[11.5px]">({existing.role}{existing.status === "disabled" ? ", disabled" : ""})</span>.
+        </p>
+
+        <div className="rounded-lg border border-mist bg-card p-3.5">
+          <p className="mb-2 text-[11.5px] font-bold uppercase tracking-[0.08em] text-soft">Use a different username or password instead</p>
+          <div className="grid gap-2.5 sm:grid-cols-2">
+            <Field label="New username">
+              <TextInput value={u} onChange={(e) => setU(e.target.value)} className="font-mono" autoFocus />
+            </Field>
+            <Field label="New password" hint="min. 6 characters">
+              <TextInput value={p} onChange={(e) => setP(e.target.value)} className="font-mono" />
+            </Field>
+          </div>
+          <Btn variant="solid" size="sm" className="mt-3 w-full" disabled={!valid} onClick={() => onUseNew(u.trim().toLowerCase(), p.trim())}>
+            Save with these credentials
+          </Btn>
+        </div>
+
+        <div className="rounded-lg border border-rust-200 bg-rust-50 p-3.5">
+          <p className="text-[11.5px] font-bold uppercase tracking-[0.08em] text-rust-700">Replace the existing account</p>
+          <p className="mt-1 text-[12px] text-rust-700/85">
+            Permanently removes {existing.name}'s login and creates this one with <span className="font-mono font-bold">@{username}</span> in its place. Only do this if that account is stale or unused — {existing.name} will lose access immediately.
+          </p>
+          <Btn variant="danger" size="sm" className="mt-3 w-full" onClick={onReplace}>
+            Replace @{existing.username} with this account
+          </Btn>
+        </div>
+
+        <Btn variant="ghost" size="sm" className="w-full" onClick={onCancel}>Cancel — don't create a login</Btn>
+      </div>
+    </Modal>
+  );
+}
 
 export function Stat({ label, value, sub, icon, tone = "pine", onClick, delay = 0 }: { label: string; value: ReactNode; sub?: string; icon?: ReactNode; tone?: "pine" | "gold" | "rust" | "steel"; onClick?: () => void; delay?: number }) {
   const tones = {

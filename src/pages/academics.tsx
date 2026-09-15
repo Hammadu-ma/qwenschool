@@ -10,13 +10,13 @@ import type {
   PaymentMethod, SchoolClass, Section, Student, Submission, Subject, TimetableEntry,
 } from "../types";
 import {
-  assessmentCalc, attendanceStats, childrenOf, feeStats, fmt1, fmtDate, fullName, getClass,
+  assessmentCalc, attendanceStats, childrenOf, describeSyncErrors, feeStats, fmt1, fmtDate, fullName, getClass,
   getSubject, getTeacher, gradeFor, ordinal, sectionLabel, sectionShort, shortName,
   structureRanks, structureWeightSum, studentAverage, studentOf, studentResults, studentsOf,
   submissionFor, submissionStatus, teacherFor, teacherPairs, teacherStudentIds,
   todayISO, uid, useApp,
 } from "../store";
-import { hasPermission, pushAudit, pushNotifications } from "../rbac";
+import { hasPermission, isSuperAdmin, pushAudit, pushNotifications } from "../rbac";
 import { downloadCsv, drawThemedHeader, drawThemedSectionLabel, drawThemedTable, newThemedDoc } from "../lib/exportKit";
 import {
   Avatar, Btn, Chip, EmptyState, Field, Modal, PageHead, Panel, Select, Stat, Tabs,
@@ -151,12 +151,15 @@ export function MarkEntryPage() {
   const status = structure ? submissionStatus(db, structure.id) : "draft";
   const canApprove = hasPermission(db, currentUser, "results.manage");
   const canPublish = hasPermission(db, currentUser, "results.publish");
+  const canReopen = isSuperAdmin(db, currentUser); // DB enforces super-admin-only for this transition
   const canEnter = hasPermission(db, currentUser, "exams.enter_marks") || isAdmin;
   const canEdit = canEnter && (status === "draft" || status === "returned");
   const [confirmSubmit, setConfirmSubmit] = useState(false);
   const [returnOpen, setReturnOpen] = useState(false);
   const [returnReason, setReturnReason] = useState("");
   const [confirmPublish, setConfirmPublish] = useState(false);
+  const [reopenOpen, setReopenOpen] = useState(false);
+  const [reopenReasonInput, setReopenReasonInput] = useState("");
 
   const ensureSubmission = (d: { submissions: Submission[] }, structureId: string): Submission => {
     let s = d.submissions.find((x) => x.structureId === structureId);
@@ -167,9 +170,9 @@ export function MarkEntryPage() {
     return s;
   };
 
-  const doSubmit = () => {
+  const doSubmit = async () => {
     if (!structure || !currentUser) return;
-    update((d) => {
+    const errors = await update((d) => {
       const s = ensureSubmission(d, structure.id);
       s.status = "submitted";
       s.submittedBy = currentUser.id;
@@ -180,12 +183,13 @@ export function MarkEntryPage() {
       pushNotifications(d, approvers.map((u) => u.id), "result", "Marks awaiting review", `${currentUser.name} submitted ${getSubject(db, structure.subjectId)?.name} — ${getClass(db, structure.classId)?.name}.`);
     });
     setConfirmSubmit(false);
-    toast("Submitted for administrative review.");
+    if (errors.length) toast(describeSyncErrors(errors), "warn");
+    else toast("Submitted for administrative review.");
   };
 
-  const doApprove = () => {
+  const doApprove = async () => {
     if (!structure || !currentUser) return;
-    update((d) => {
+    const errors = await update((d) => {
       const s = ensureSubmission(d, structure.id);
       s.status = "approved";
       s.approvedBy = currentUser.id;
@@ -193,12 +197,13 @@ export function MarkEntryPage() {
       pushAudit(d, currentUser, "marks.approve", `${getSubject(db, structure.subjectId)?.name} · ${getClass(db, structure.classId)?.name}`, "Approved");
       if (s.submittedBy) pushNotifications(d, [s.submittedBy], "result", "Marks approved", `Your ${getSubject(db, structure.subjectId)?.name} marks were approved by ${currentUser.name}.`);
     });
-    toast("Marks approved.");
+    if (errors.length) toast(describeSyncErrors(errors), "warn");
+    else toast("Marks approved.");
   };
 
-  const doReturn = () => {
+  const doReturn = async () => {
     if (!structure || !currentUser || !returnReason.trim()) { toast("A reason is required to return marks.", "warn"); return; }
-    update((d) => {
+    const errors = await update((d) => {
       const s = ensureSubmission(d, structure.id);
       s.status = "returned";
       s.returnedBy = currentUser.id;
@@ -209,12 +214,13 @@ export function MarkEntryPage() {
     });
     setReturnOpen(false);
     setReturnReason("");
-    toast("Returned for correction.");
+    if (errors.length) toast(describeSyncErrors(errors), "warn");
+    else toast("Returned for correction.");
   };
 
-  const doPublish = () => {
+  const doPublish = async () => {
     if (!structure || !currentUser) return;
-    update((d) => {
+    const errors = await update((d) => {
       const s = ensureSubmission(d, structure.id);
       s.status = "published";
       s.publishedBy = currentUser.id;
@@ -225,23 +231,28 @@ export function MarkEntryPage() {
       pushNotifications(d, recipients.map((u) => u.id), "result", "Results published", `${getSubject(db, structure.subjectId)?.name} results for ${getClass(db, structure.classId)?.name} are now available.`);
     });
     setConfirmPublish(false);
-    toast("Published — students and families can now view these results.");
+    if (errors.length) toast(describeSyncErrors(errors), "warn");
+    else toast("Published — students and families can now view these results.");
   };
 
-  const doReopen = () => {
-    if (!structure || !currentUser) return;
-    update((d) => {
+  const doReopen = async () => {
+    if (!structure || !currentUser || !reopenReasonInput.trim()) { toast("A reason is required to reopen a marks workflow.", "warn"); return; }
+    const errors = await update((d) => {
       const s = ensureSubmission(d, structure.id);
       s.status = "draft";
       s.approvedBy = undefined; s.approvedAt = undefined; s.publishedBy = undefined; s.publishedAt = undefined;
-      pushAudit(d, currentUser, "marks.reopen", `${getSubject(db, structure.subjectId)?.name} · ${getClass(db, structure.classId)?.name}`, "Reopened for editing");
+      s.reopenReason = reopenReasonInput.trim();
+      pushAudit(d, currentUser, "marks.reopen", `${getSubject(db, structure.subjectId)?.name} · ${getClass(db, structure.classId)?.name}`, reopenReasonInput.trim());
     });
-    toast("Reopened — marks are editable again.");
+    setReopenOpen(false);
+    setReopenReasonInput("");
+    if (errors.length) toast(describeSyncErrors(errors), "warn");
+    else toast("Reopened — marks are editable again.");
   };
 
-  const setScore = (studentId: string, item: AssessmentItem, raw: string) => {
+  const setScore = async (studentId: string, item: AssessmentItem, raw: string) => {
     if (!structure || !canEdit) return;
-    update((d) => {
+    const errors = await update((d) => {
       const byStudent = (d.assessmentMarks[structure.id] = d.assessmentMarks[structure.id] ?? {});
       const row = (byStudent[studentId] = byStudent[studentId] ?? {});
       if (raw === "") {
@@ -252,7 +263,12 @@ export function MarkEntryPage() {
       const v = Number(raw);
       row[item.id] = isNaN(v) ? 0 : Math.max(0, Math.min(item.max, v));
     });
-    setSavedAt(new Date().toLocaleTimeString("en-GB"));
+    if (errors.length) {
+      // Don't show a false "Saved" — the write may not have reached the server.
+      toast(describeSyncErrors(errors), "warn");
+    } else {
+      setSavedAt(new Date().toLocaleTimeString("en-GB"));
+    }
   };
 
   return (
@@ -363,8 +379,8 @@ export function MarkEntryPage() {
                   {status === "approved" && canPublish && (
                     <Btn size="sm" variant="solid" onClick={() => setConfirmPublish(true)}><Globe2 className="h-3.5 w-3.5" /> Publish results</Btn>
                   )}
-                  {(status === "approved" || status === "published") && canApprove && (
-                    <Btn size="sm" variant="ghost" onClick={doReopen}><RotateCcw className="h-3.5 w-3.5" /> Reopen</Btn>
+                  {(status === "approved" || status === "published") && canReopen && (
+                    <Btn size="sm" variant="ghost" onClick={() => setReopenOpen(true)}><RotateCcw className="h-3.5 w-3.5" /> Reopen</Btn>
                   )}
                 </div>
                 {!canEdit && (
@@ -463,6 +479,16 @@ export function MarkEntryPage() {
         </Modal>
       )}
 
+      {structure && reopenOpen && (
+        <Modal title="Reopen marks workflow" kicker="Super-admin only — a reason is required" onClose={() => setReopenOpen(false)}
+          footer={<><Btn variant="ghost" onClick={() => setReopenOpen(false)}>Cancel</Btn><Btn variant="danger" onClick={doReopen}><RotateCcw className="h-4 w-4" /> Reopen</Btn></>}>
+          <Field label="Reason" required>
+            <TextArea value={reopenReasonInput} onChange={(e) => setReopenReasonInput(e.target.value)} placeholder="e.g. Correcting a transcription error found after publishing." />
+          </Field>
+          <p className="mt-2 text-[12px] text-soft">This unlocks the marks for editing again and is permanently recorded in the audit log.</p>
+        </Modal>
+      )}
+
       {structure && confirmPublish && (
         <Modal title="Publish results" kicker={`${getSubject(db, structure.subjectId)?.name} · ${getClass(db, structure.classId)?.name}`} onClose={() => setConfirmPublish(false)}
           footer={<><Btn variant="ghost" onClick={() => setConfirmPublish(false)}>Cancel</Btn><Btn variant="gold" onClick={doPublish}><Globe2 className="h-4 w-4" /> Publish</Btn></>}>
@@ -491,11 +517,11 @@ function StructureModal({ existing, onClose }: { existing?: AssessmentStructure;
   const removeItem = (id: string) => setItems((p) => p.filter((i) => i.id !== id));
   const patchItem = (id: string, patch: Partial<AssessmentItem>) => setItems((p) => p.map((i) => (i.id === id ? { ...i, ...patch } : i)));
 
-  const save = () => {
+  const save = async () => {
     if (!classId || !subjectId) { toast("Choose a class and subject.", "warn"); return; }
     if (items.length === 0) { toast("Add at least one assessment item.", "warn"); return; }
     if (items.some((i) => !i.name.trim())) { toast("Every item needs a name.", "warn"); return; }
-    update((d) => {
+    const errors = await update((d) => {
       if (existing) {
         const i = d.structures.findIndex((s) => s.id === existing.id);
         if (i >= 0) d.structures[i] = { ...existing, classId, subjectId, period, items };
@@ -505,6 +531,7 @@ function StructureModal({ existing, onClose }: { existing?: AssessmentStructure;
         pushAudit(d, currentUser, "structure.create", `${getSubject(db, subjectId)?.name} · ${getClass(db, classId)?.name}`);
       }
     });
+    if (errors.length) { toast(describeSyncErrors(errors), "warn"); return; }
     toast(existing ? "Structure updated." : "Structure created.");
     onClose();
   };

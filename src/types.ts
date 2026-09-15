@@ -211,6 +211,8 @@ export interface Submission {
   returnedBy?: ID;
   returnedAt?: string;
   returnReason?: string;
+  /** Required by the DB whenever a super admin reopens an approved/published submission. */
+  reopenReason?: string;
 }
 
 export interface GradeBand {

@@ -46,6 +46,15 @@ export function hasPermission(db: DB, user: User | null, permission: string): bo
   return role.permissions.includes(permission);
 }
 
+/** Mirrors the DB's is_super(): true only for a role with unrestricted ("*") permissions.
+ *  Used anywhere the database itself enforces a super-admin-only action (e.g. reopening a
+ *  published marks workflow) so the UI doesn't offer a button the server will reject. */
+export function isSuperAdmin(db: DB, user: User | null): boolean {
+  if (!user || user.status !== "active") return false;
+  const role = getRoleProfile(db, user);
+  return !!role && role.status === "active" && role.permissions.includes("*");
+}
+
 /** Convenience used inside mutators: returns false and reports nothing (caller toasts). */
 export const requirePermission = (db: DB, user: User | null, permission: string) =>
   hasPermission(db, user, permission);

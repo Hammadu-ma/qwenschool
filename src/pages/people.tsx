@@ -13,7 +13,7 @@ import {
 } from "../store";
 import {
   Avatar, Btn, Chip, EmptyState, Field, Modal, PageHead, Panel, Ring, RoleBadge, Select, Tabs, TextInput,
-  UserAvatar, tdCls, thCls,
+  UserAvatar, UsernameConflictModal, tdCls, thCls,
 } from "../ui";
 import { AccessDenied } from "./Auth";
 import { defaultRoleIdFor, hasPermission, pushAudit } from "../rbac";
@@ -143,24 +143,9 @@ function RegisterStudentModal({ onClose, onSaved }: { onClose: () => void; onSav
     makeLogin: true, username: "", password: "stud123",
   });
   const set = (k: string, v: string | boolean) => setF((p) => ({ ...p, [k]: v }));
-  const save = async () => {
-    if (!f.firstName.trim() || !f.lastName.trim() || !f.dob || !f.sectionId) {
-      toast("First name, last name, date of birth and section are required.", "warn");
-      return;
-    }
-    if (f.makeLogin && (!f.username.trim() || !f.password.trim())) {
-      toast("Login needs a username and password (or untick “Create login”).", "warn");
-      return;
-    }
-    if (f.makeLogin && f.password.trim().length < 6) {
-      toast("Password must be at least 6 characters.", "warn");
-      return;
-    }
-    const loginUsername = f.username.trim().toLowerCase(); // normalize now: login always looks up the lowercase form
-    if (f.makeLogin && db.users.some((u) => u.username.toLowerCase() === loginUsername)) {
-      toast("That username is already taken.", "warn");
-      return;
-    }
+  const [conflict, setConflict] = useState<User | null>(null);
+
+  const finalizeSave = async (loginUsername?: string, loginPassword?: string, replaceId?: string) => {
     const id = uid();
     const regNo = `ST-2026-${String(db.students.length + 1).padStart(3, "0")}`;
     const errors = await update((d) => {
@@ -175,9 +160,13 @@ function RegisterStudentModal({ onClose, onSaved }: { onClose: () => void; onSav
         documents: [],
         status: "active",
       });
-      if (f.makeLogin) {
+      if (loginUsername && loginPassword) {
+        if (replaceId) {
+          const ridx = d.users.findIndex((u) => u.id === replaceId);
+          if (ridx >= 0) d.users.splice(ridx, 1);
+        }
         d.users.push({
-          id: uid(), name: `${f.firstName.trim()} ${f.lastName.trim()}`, username: loginUsername, password: f.password.trim(),
+          id: uid(), name: `${f.firstName.trim()} ${f.lastName.trim()}`, username: loginUsername, password: loginPassword,
           role: "student", roleId: "student", status: "active", studentId: id, createdAt: todayISO(),
         });
       }
@@ -185,12 +174,36 @@ function RegisterStudentModal({ onClose, onSaved }: { onClose: () => void; onSav
     if (errors.length) {
       toast(describeSyncErrors(errors), "warn");
     } else {
-      toast(`${f.firstName.trim()} ${f.lastName.trim()} registered${f.makeLogin ? " — student login created" : ""}.`);
-      if (f.makeLogin) await reconnect(); // pull in the real Supabase-assigned account id
+      toast(`${f.firstName.trim()} ${f.lastName.trim()} registered${loginUsername ? " — student login created" : ""}.`);
+      if (loginUsername) await reconnect(); // pull in the real Supabase-assigned account id
     }
     onSaved(id);
   };
+
+  const save = async () => {
+    if (!f.firstName.trim() || !f.lastName.trim() || !f.dob || !f.sectionId) {
+      toast("First name, last name, date of birth and section are required.", "warn");
+      return;
+    }
+    if (f.makeLogin && (!f.username.trim() || !f.password.trim())) {
+      toast("Login needs a username and password (or untick “Create login”).", "warn");
+      return;
+    }
+    if (f.makeLogin && f.password.trim().length < 6) {
+      toast("Password must be at least 6 characters.", "warn");
+      return;
+    }
+    const loginUsername = f.username.trim().toLowerCase(); // normalize now: login always looks up the lowercase form
+    if (f.makeLogin) {
+      const existing = db.users.find((u) => u.username.toLowerCase() === loginUsername);
+      if (existing) { setConflict(existing); return; }
+      await finalizeSave(loginUsername, f.password.trim());
+    } else {
+      await finalizeSave();
+    }
+  };
   return (
+    <>
     <Modal title="Register student" kicker="One record, reused everywhere" onClose={onClose} wide
       footer={<><Btn variant="ghost" onClick={onClose}>Cancel</Btn><Btn onClick={save}><Plus className="h-4 w-4" /> Save student</Btn></>}>
       <div className="grid gap-4 sm:grid-cols-3">
@@ -232,6 +245,22 @@ function RegisterStudentModal({ onClose, onSaved }: { onClose: () => void; onSav
         )}
       </div>
     </Modal>
+    {conflict && (
+      <UsernameConflictModal
+        existing={conflict}
+        username={f.username.trim().toLowerCase()}
+        password={f.password.trim()}
+        onCancel={() => setConflict(null)}
+        onReplace={async () => { const c = conflict; setConflict(null); await finalizeSave(f.username.trim().toLowerCase(), f.password.trim(), c!.id); }}
+        onUseNew={async (u, p) => {
+          const other = db.users.find((x) => x.username.toLowerCase() === u);
+          if (other) { setConflict(other); return; }
+          setConflict(null);
+          await finalizeSave(u, p);
+        }}
+      />
+    )}
+    </>
   );
 }
 
@@ -783,19 +812,22 @@ export function FamiliesPage() {
   const toggleChild = (id: string) =>
     setEdit((p) => p && { ...p, childrenIds: p.childrenIds.includes(id) ? p.childrenIds.filter((x) => x !== id) : [...p.childrenIds, id] });
 
-  const save = async () => {
-    if (!edit || !edit.name.trim() || !edit.username.trim() || !edit.password.trim()) { toast("Name, username and password are required.", "warn"); return; }
-    if (!edit.id && edit.password.trim().length < 6) { toast("Password must be at least 6 characters.", "warn"); return; }
-    const loginUsername = edit.username.trim().toLowerCase(); // normalize now: login always looks up the lowercase form
-    if (db.users.some((u) => u.username.toLowerCase() === loginUsername && u.id !== edit.id)) { toast("Username already taken.", "warn"); return; }
+  const [conflict, setConflict] = useState<User | null>(null);
+
+  const finalizeSave = async (loginUsername: string, loginPassword: string, replaceId?: string) => {
+    if (!edit) return;
     const isNew = !edit.id;
     const errors = await update((d) => {
+      if (replaceId) {
+        const ridx = d.users.findIndex((u) => u.id === replaceId);
+        if (ridx >= 0) d.users.splice(ridx, 1);
+      }
       if (edit.id) {
         const u = d.users.find((x) => x.id === edit.id)!;
-        u.name = edit.name.trim(); u.username = loginUsername; u.password = edit.password.trim();
+        u.name = edit.name.trim(); u.username = loginUsername; u.password = loginPassword;
         u.phone = edit.phone.trim(); u.email = edit.email.trim(); u.childrenIds = edit.childrenIds;
       } else {
-        d.users.push({ id: uid(), name: edit.name.trim(), username: loginUsername, password: edit.password.trim(), role: "guardian", roleId: "guardian", status: "active", phone: edit.phone.trim(), email: edit.email.trim(), childrenIds: edit.childrenIds, createdAt: todayISO() });
+        d.users.push({ id: uid(), name: edit.name.trim(), username: loginUsername, password: loginPassword, role: "guardian", roleId: "guardian", status: "active", phone: edit.phone.trim(), email: edit.email.trim(), childrenIds: edit.childrenIds, createdAt: todayISO() });
       }
     });
     if (errors.length) {
@@ -805,6 +837,15 @@ export function FamiliesPage() {
       if (isNew) await reconnect(); // pull in the real Supabase-assigned account id
     }
     setEdit(null);
+  };
+
+  const save = async () => {
+    if (!edit || !edit.name.trim() || !edit.username.trim() || !edit.password.trim()) { toast("Name, username and password are required.", "warn"); return; }
+    if (!edit.id && edit.password.trim().length < 6) { toast("Password must be at least 6 characters.", "warn"); return; }
+    const loginUsername = edit.username.trim().toLowerCase(); // normalize now: login always looks up the lowercase form
+    const existing = db.users.find((u) => u.username.toLowerCase() === loginUsername && u.id !== edit.id);
+    if (existing) { setConflict(existing); return; }
+    await finalizeSave(loginUsername, edit.password.trim());
   };
 
   return (
@@ -861,6 +902,21 @@ export function FamiliesPage() {
           </div>
         </Modal>
       )}
+      {conflict && edit && (
+        <UsernameConflictModal
+          existing={conflict}
+          username={edit.username.trim().toLowerCase()}
+          password={edit.password.trim()}
+          onCancel={() => setConflict(null)}
+          onReplace={async () => { const c = conflict; setConflict(null); await finalizeSave(edit.username.trim().toLowerCase(), edit.password.trim(), c!.id); }}
+          onUseNew={async (u, p) => {
+            const other = db.users.find((x) => x.username.toLowerCase() === u && x.id !== edit.id);
+            if (other) { setConflict(other); return; }
+            setConflict(null);
+            await finalizeSave(u, p);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -875,21 +931,21 @@ export function UsersPage() {
 
   const set = (patch: Partial<User>) => setEdit((p) => (p && p !== "new" ? { ...p, ...patch } : p === "new" ? { ...blank, ...patch } : p));
 
-  const save = async () => {
+  const [conflict, setConflict] = useState<User | null>(null);
+
+  const finalizeSave = async (loginUsername: string, loginPassword: string, replaceId?: string) => {
     if (!draft) return;
-    if (!draft.name.trim() || !draft.username.trim() || !draft.password.trim()) { toast("Name, username and password are required.", "warn"); return; }
-    if (!draft.id && draft.password.trim().length < 6) { toast("Password must be at least 6 characters.", "warn"); return; }
-    if (draft.role === "teacher" && !draft.teacherId) { toast("Pick a staff record to link — a teacher account needs one.", "warn"); return; }
-    if (draft.role === "student" && !draft.studentId) { toast("Pick a student record to link — a student account needs one.", "warn"); return; }
-    const loginUsername = draft.username.trim().toLowerCase(); // normalize now: login always looks up the lowercase form
-    if (db.users.some((u) => u.username.toLowerCase() === loginUsername && u.id !== draft.id)) { toast("Username already taken.", "warn"); return; }
     const isNew = !draft.id;
     const errors = await update((d) => {
+      if (replaceId) {
+        const ridx = d.users.findIndex((u) => u.id === replaceId);
+        if (ridx >= 0) d.users.splice(ridx, 1);
+      }
       if (draft.id) {
         const u = d.users.find((x) => x.id === draft.id)!;
-        Object.assign(u, { ...draft, name: draft.name.trim(), username: loginUsername });
+        Object.assign(u, { ...draft, name: draft.name.trim(), username: loginUsername, password: loginPassword });
       } else {
-        d.users.push({ ...draft, id: uid(), name: draft.name.trim(), username: loginUsername });
+        d.users.push({ ...draft, id: uid(), name: draft.name.trim(), username: loginUsername, password: loginPassword });
       }
     });
     if (errors.length) {
@@ -899,6 +955,18 @@ export function UsersPage() {
       if (isNew) await reconnect(); // pull in the real Supabase-assigned account id
     }
     setEdit(null);
+  };
+
+  const save = async () => {
+    if (!draft) return;
+    if (!draft.name.trim() || !draft.username.trim() || !draft.password.trim()) { toast("Name, username and password are required.", "warn"); return; }
+    if (!draft.id && draft.password.trim().length < 6) { toast("Password must be at least 6 characters.", "warn"); return; }
+    if (draft.role === "teacher" && !draft.teacherId) { toast("Pick a staff record to link — a teacher account needs one.", "warn"); return; }
+    if (draft.role === "student" && !draft.studentId) { toast("Pick a student record to link — a student account needs one.", "warn"); return; }
+    const loginUsername = draft.username.trim().toLowerCase(); // normalize now: login always looks up the lowercase form
+    const existing = db.users.find((u) => u.username.toLowerCase() === loginUsername && u.id !== draft.id);
+    if (existing) { setConflict(existing); return; }
+    await finalizeSave(loginUsername, draft.password.trim());
   };
 
   const toggleStatus = (u: User) => {
@@ -1046,6 +1114,21 @@ export function UsersPage() {
             {draft.role === "admin" && <p className="text-[12px] text-pine-800">Administrators manage the whole school — users, records, settings and communication.</p>}
           </div>
         </Modal>
+      )}
+      {conflict && draft && (
+        <UsernameConflictModal
+          existing={conflict}
+          username={draft.username.trim().toLowerCase()}
+          password={draft.password.trim()}
+          onCancel={() => setConflict(null)}
+          onReplace={async () => { const c = conflict; setConflict(null); await finalizeSave(draft.username.trim().toLowerCase(), draft.password.trim(), c!.id); }}
+          onUseNew={async (u, p) => {
+            const other = db.users.find((x) => x.username.toLowerCase() === u && x.id !== draft.id);
+            if (other) { setConflict(other); return; }
+            setConflict(null);
+            await finalizeSave(u, p);
+          }}
+        />
       )}
     </div>
   );
