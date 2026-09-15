@@ -101,7 +101,8 @@ export function RegistrationWizard({ student, onClose, onSaved }: WizardProps) {
     if (!f.classId || !f.sectionId) { toast("Pick a grade and section.", "warn"); return; }
     if (!isEdit && f.makeLogin && (!f.username.trim() || !f.password.trim())) { toast("Login needs a username and password.", "warn"); return; }
     if (!isEdit && f.makeLogin && f.password.trim().length < 6) { toast("Password must be at least 6 characters.", "warn"); return; }
-    if (!isEdit && f.makeLogin && db.users.some((u) => u.username.toLowerCase() === f.username.trim().toLowerCase())) { toast("That username is already taken.", "warn"); return; }
+    const loginUsername = f.username.trim().toLowerCase(); // normalize now: login always looks up the lowercase form
+    if (!isEdit && f.makeLogin && db.users.some((u) => u.username.toLowerCase() === loginUsername)) { toast("That username is already taken.", "warn"); return; }
 
     const id = isEdit ? student!.id : uid();
     const errors = await update((d) => {
@@ -128,7 +129,7 @@ export function RegistrationWizard({ student, onClose, onSaved }: WizardProps) {
         pushAudit(d, currentUser, "student.register", `${record.firstName} ${record.lastName}`, `Admitted to ${sectionLabel(db, f.classId, f.sectionId)}`);
         if (f.makeLogin) {
           d.users.push({
-            id: uid(), name: `${record.firstName} ${record.lastName}`, username: f.username.trim(), password: f.password.trim(),
+            id: uid(), name: `${record.firstName} ${record.lastName}`, username: loginUsername, password: f.password.trim(),
             role: "student", roleId: "student", status: "active", studentId: id, email: record.email, createdAt: todayISO(),
           });
         }

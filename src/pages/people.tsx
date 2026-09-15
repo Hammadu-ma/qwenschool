@@ -4,7 +4,7 @@ import {
   BadgeCheck, Baby, BookOpen, CalendarCheck2, CreditCard, FileBarChart2, History, Inbox, KeyRound, Layers, Lock,
   FileText as Notebook, Pencil, Plus, Search, ShieldCheck, Trash2, User as UserIcon, Users, Wallet, Eye, GraduationCap, X,
 } from "lucide-react";
-import type { Enrollment, Role, Student, User, UserStatus } from "../types";
+import type { DB, Enrollment, Role, Student, User, UserStatus } from "../types";
 import {
   assessmentCalc, attendanceStats, canSeeStudent, childrenOf, describeSyncErrors, feeStats, fmtDate, fullName, getClass, getSection,
   getSubject, gradeFor, guardianOfStudent, homePathFor, ordinal, sectionLabel, sectionShort, shortName,
@@ -156,7 +156,8 @@ function RegisterStudentModal({ onClose, onSaved }: { onClose: () => void; onSav
       toast("Password must be at least 6 characters.", "warn");
       return;
     }
-    if (f.makeLogin && db.users.some((u) => u.username.toLowerCase() === f.username.trim().toLowerCase())) {
+    const loginUsername = f.username.trim().toLowerCase(); // normalize now: login always looks up the lowercase form
+    if (f.makeLogin && db.users.some((u) => u.username.toLowerCase() === loginUsername)) {
       toast("That username is already taken.", "warn");
       return;
     }
@@ -176,7 +177,7 @@ function RegisterStudentModal({ onClose, onSaved }: { onClose: () => void; onSav
       });
       if (f.makeLogin) {
         d.users.push({
-          id: uid(), name: `${f.firstName.trim()} ${f.lastName.trim()}`, username: f.username.trim(), password: f.password.trim(),
+          id: uid(), name: `${f.firstName.trim()} ${f.lastName.trim()}`, username: loginUsername, password: f.password.trim(),
           role: "student", roleId: "student", status: "active", studentId: id, createdAt: todayISO(),
         });
       }
@@ -705,12 +706,79 @@ export function TeachersPage() {
   );
 }
 
+/* ================= reusable: searchable, filterable student picker =================
+   Used anywhere a login needs linking to a student record — guardian children,
+   the standalone "New user" form — so it's one consistent, filterable list
+   instead of a plain <select> that's unusable once a school has a few hundred
+   students. */
+function StudentPicker({
+  db, selectedIds, onToggle, placeholder = "Search name or student ID…",
+}: {
+  db: DB;
+  selectedIds: string[];
+  onToggle: (id: string) => void;
+  placeholder?: string;
+}) {
+  const [q, setQ] = useState("");
+  const [cls, setCls] = useState("");
+  const [sec, setSec] = useState("");
+
+  const rows = db.students
+    .filter((s) => !cls || s.enrollment?.classId === cls)
+    .filter((s) => !sec || s.enrollment?.sectionId === sec)
+    .filter((s) => (q ? shortName(s).toLowerCase().includes(q.toLowerCase()) || s.regId.toLowerCase().includes(q.toLowerCase()) : true))
+    .sort((a, b) => shortName(a).localeCompare(shortName(b)));
+
+  return (
+    <div>
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <div className="relative min-w-[160px] flex-1">
+          <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-soft" />
+          <TextInput value={q} onChange={(e) => setQ(e.target.value)} placeholder={placeholder} className="!py-1.5 !pl-8 text-[12.5px]" />
+        </div>
+        <Select value={cls} onChange={(e) => { setCls(e.target.value); setSec(""); }} className="!w-36 !py-1.5 text-[12.5px]">
+          <option value="">All grades</option>
+          {db.classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </Select>
+        <Select value={sec} onChange={(e) => setSec(e.target.value)} className="!w-32 !py-1.5 text-[12.5px]" disabled={!cls}>
+          <option value="">All sections</option>
+          {getClass(db, cls)?.sections.map((s) => <option key={s.id} value={s.id}>Section {s.name}</option>)}
+        </Select>
+        {(q || cls || sec) && (
+          <button type="button" onClick={() => { setQ(""); setCls(""); setSec(""); }} className="cursor-pointer text-[11px] font-semibold text-soft hover:text-pine-700">Clear</button>
+        )}
+      </div>
+      <div className="grid max-h-64 gap-1.5 overflow-y-auto rounded-lg border border-mist p-2 sm:grid-cols-2">
+        {rows.map((s) => {
+          const on = selectedIds.includes(s.id);
+          return (
+            <button key={s.id} type="button" onClick={() => onToggle(s.id)}
+              className={`flex cursor-pointer items-center gap-2 rounded-lg border px-2.5 py-1.5 text-left transition-all ${on ? "border-gold-400 bg-gold-100/60" : "border-mist bg-card hover:border-pine-300"}`}>
+              <Avatar student={s} size={26} />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[12px] font-bold text-ink">{shortName(s)}</span>
+                <span className="flex items-center gap-1.5">
+                  <span className="font-mono text-[9.5px] text-soft">{s.regId}</span>
+                  <span className="text-[10px] text-soft">· {s.enrollment ? sectionShort(db, s.enrollment.classId, s.enrollment.sectionId) : "Unplaced"}</span>
+                </span>
+              </span>
+              {on && <BadgeCheck className="h-3.5 w-3.5 shrink-0 text-gold-600" />}
+            </button>
+          );
+        })}
+        {rows.length === 0 && (
+          <p className="col-span-full rounded-lg bg-paper/60 px-3 py-6 text-center text-[11.5px] text-soft">No students match those filters.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ================= families (admin) ================= */
 export function FamiliesPage() {
   const { db, update, toast, reconnect } = useApp();
   const [edit, setEdit] = useState<{ id?: string; name: string; username: string; password: string; phone: string; email: string; childrenIds: string[] } | null>(null);
   const guardians = db.users.filter((u) => u.role === "guardian");
-  const enrolled = db.students.filter((s) => s.enrollment);
 
   const toggleChild = (id: string) =>
     setEdit((p) => p && { ...p, childrenIds: p.childrenIds.includes(id) ? p.childrenIds.filter((x) => x !== id) : [...p.childrenIds, id] });
@@ -718,15 +786,16 @@ export function FamiliesPage() {
   const save = async () => {
     if (!edit || !edit.name.trim() || !edit.username.trim() || !edit.password.trim()) { toast("Name, username and password are required.", "warn"); return; }
     if (!edit.id && edit.password.trim().length < 6) { toast("Password must be at least 6 characters.", "warn"); return; }
-    if (db.users.some((u) => u.username.toLowerCase() === edit.username.trim().toLowerCase() && u.id !== edit.id)) { toast("Username already taken.", "warn"); return; }
+    const loginUsername = edit.username.trim().toLowerCase(); // normalize now: login always looks up the lowercase form
+    if (db.users.some((u) => u.username.toLowerCase() === loginUsername && u.id !== edit.id)) { toast("Username already taken.", "warn"); return; }
     const isNew = !edit.id;
     const errors = await update((d) => {
       if (edit.id) {
         const u = d.users.find((x) => x.id === edit.id)!;
-        u.name = edit.name.trim(); u.username = edit.username.trim(); u.password = edit.password.trim();
+        u.name = edit.name.trim(); u.username = loginUsername; u.password = edit.password.trim();
         u.phone = edit.phone.trim(); u.email = edit.email.trim(); u.childrenIds = edit.childrenIds;
       } else {
-        d.users.push({ id: uid(), name: edit.name.trim(), username: edit.username.trim(), password: edit.password.trim(), role: "guardian", roleId: "guardian", status: "active", phone: edit.phone.trim(), email: edit.email.trim(), childrenIds: edit.childrenIds, createdAt: todayISO() });
+        d.users.push({ id: uid(), name: edit.name.trim(), username: loginUsername, password: edit.password.trim(), role: "guardian", roleId: "guardian", status: "active", phone: edit.phone.trim(), email: edit.email.trim(), childrenIds: edit.childrenIds, createdAt: todayISO() });
       }
     });
     if (errors.length) {
@@ -788,22 +857,7 @@ export function FamiliesPage() {
           </div>
           <div className="mt-4">
             <p className="mb-2 text-[11.5px] font-bold uppercase tracking-[0.08em] text-soft">Connected children — {edit.childrenIds.length} selected</p>
-            <div className="grid max-h-56 gap-1.5 overflow-y-auto rounded-lg border border-mist p-2 sm:grid-cols-2">
-              {enrolled.map((s) => {
-                const on = edit.childrenIds.includes(s.id);
-                return (
-                  <button key={s.id} onClick={() => toggleChild(s.id)}
-                    className={`flex cursor-pointer items-center gap-2 rounded-lg border px-2.5 py-1.5 text-left transition-all ${on ? "border-gold-400 bg-gold-100/60" : "border-mist bg-card hover:border-pine-300"}`}>
-                    <Avatar student={s} size={24} />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-[12px] font-bold text-ink">{shortName(s)}</span>
-                      <span className="text-[10px] text-soft">{sectionShort(db, s.enrollment?.classId, s.enrollment?.sectionId)}</span>
-                    </span>
-                    {on && <BadgeCheck className="h-3.5 w-3.5 shrink-0 text-gold-600" />}
-                  </button>
-                );
-              })}
-            </div>
+            <StudentPicker db={db} selectedIds={edit.childrenIds} onToggle={toggleChild} placeholder="Search a child by name or student ID…" />
           </div>
         </Modal>
       )}
@@ -825,14 +879,17 @@ export function UsersPage() {
     if (!draft) return;
     if (!draft.name.trim() || !draft.username.trim() || !draft.password.trim()) { toast("Name, username and password are required.", "warn"); return; }
     if (!draft.id && draft.password.trim().length < 6) { toast("Password must be at least 6 characters.", "warn"); return; }
-    if (db.users.some((u) => u.username.toLowerCase() === draft.username.trim().toLowerCase() && u.id !== draft.id)) { toast("Username already taken.", "warn"); return; }
+    if (draft.role === "teacher" && !draft.teacherId) { toast("Pick a staff record to link — a teacher account needs one.", "warn"); return; }
+    if (draft.role === "student" && !draft.studentId) { toast("Pick a student record to link — a student account needs one.", "warn"); return; }
+    const loginUsername = draft.username.trim().toLowerCase(); // normalize now: login always looks up the lowercase form
+    if (db.users.some((u) => u.username.toLowerCase() === loginUsername && u.id !== draft.id)) { toast("Username already taken.", "warn"); return; }
     const isNew = !draft.id;
     const errors = await update((d) => {
       if (draft.id) {
         const u = d.users.find((x) => x.id === draft.id)!;
-        Object.assign(u, { ...draft, name: draft.name.trim(), username: draft.username.trim() });
+        Object.assign(u, { ...draft, name: draft.name.trim(), username: loginUsername });
       } else {
-        d.users.push({ ...draft, id: uid(), name: draft.name.trim(), username: draft.username.trim() });
+        d.users.push({ ...draft, id: uid(), name: draft.name.trim(), username: loginUsername });
       }
     });
     if (errors.length) {
@@ -963,31 +1020,27 @@ export function UsersPage() {
               </Field>
             )}
             {draft.role === "student" && (
-              <Field label="Link to student record" hint="class + guardian flow from the record">
-                <Select value={draft.studentId ?? ""} onChange={(e) => set({ studentId: e.target.value || undefined })}>
-                  <option value="">— none —</option>
-                  {db.students.filter((s) => s.enrollment).map((s) => <option key={s.id} value={s.id}>{shortName(s)} · {sectionShort(db, s.enrollment!.classId, s.enrollment!.sectionId)}</option>)}
-                </Select>
-              </Field>
+              <div>
+                <p className="mb-1.5 text-[11.5px] font-bold uppercase tracking-[0.08em] text-soft">
+                  Link to student record{draft.studentId ? " — 1 selected" : ""}
+                </p>
+                <StudentPicker
+                  db={db}
+                  selectedIds={draft.studentId ? [draft.studentId] : []}
+                  onToggle={(id) => set({ studentId: id === draft.studentId ? undefined : id })}
+                  placeholder="Search the student by name or ID…"
+                />
+              </div>
             )}
             {draft.role === "guardian" && (
               <div>
                 <p className="mb-1.5 text-[11.5px] font-bold uppercase tracking-[0.08em] text-soft">Children — {(draft.childrenIds ?? []).length} selected</p>
-                <div className="grid max-h-44 gap-1.5 overflow-y-auto rounded-lg border border-mist bg-card p-2 sm:grid-cols-2">
-                  {db.students.filter((s) => s.enrollment).map((s) => {
-                    const on = (draft.childrenIds ?? []).includes(s.id);
-                    return (
-                      <button key={s.id} onClick={() => set({ childrenIds: on ? (draft.childrenIds ?? []).filter((x) => x !== s.id) : [...(draft.childrenIds ?? []), s.id] })}
-                        className={`flex cursor-pointer items-center gap-2 rounded-lg border px-2.5 py-1.5 text-left transition-all ${on ? "border-gold-400 bg-gold-100/60" : "border-mist hover:border-pine-300"}`}>
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate text-[12px] font-bold text-ink">{shortName(s)}</span>
-                          <span className="text-[10px] text-soft">{sectionShort(db, s.enrollment?.classId, s.enrollment?.sectionId)}</span>
-                        </span>
-                        {on && <BadgeCheck className="h-3.5 w-3.5 shrink-0 text-gold-600" />}
-                      </button>
-                    );
-                  })}
-                </div>
+                <StudentPicker
+                  db={db}
+                  selectedIds={draft.childrenIds ?? []}
+                  onToggle={(id) => set({ childrenIds: (draft.childrenIds ?? []).includes(id) ? (draft.childrenIds ?? []).filter((x) => x !== id) : [...(draft.childrenIds ?? []), id] })}
+                  placeholder="Search a child by name or student ID…"
+                />
               </div>
             )}
             {draft.role === "admin" && <p className="text-[12px] text-pine-800">Administrators manage the whole school — users, records, settings and communication.</p>}
