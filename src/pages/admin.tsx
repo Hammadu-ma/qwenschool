@@ -5,7 +5,7 @@ import {
   PERMISSION_CATALOG, PERMISSION_CATEGORIES, getRoleProfile, hasPermission, pushAudit,
 } from "../rbac";
 import type { Role, RoleDef } from "../types";
-import { Btn, Chip, EmptyState, Field, Modal, PageHead, Panel, RoleBadge, Select, TextArea, TextInput, tdCls, thCls } from "../ui";
+import { Btn, Chip, EmptyState, Field, Modal, PageHead, Panel, RoleBadge, Select, SkeletonRows, TextArea, TextInput, tdCls, thCls } from "../ui";
 import { AccessDenied } from "./Auth";
 
 const BASE_ROLES: { value: Role; label: string }[] = [
@@ -221,7 +221,7 @@ function RoleModal({ draft, canEditPerms, onClose, onSave, setDraft }: {
 /* ================= Audit log ================= */
 export function AuditPage() {
   const { db, currentUser } = useApp();
-  useLazyGroups("audit");
+  const groupsLoaded = useLazyGroups("audit");
   const [q, setQ] = useState("");
   if (!hasPermission(db, currentUser, "audit.view")) {
     return <AccessDenied required="audit.view" reason="You don't have permission to view the audit trail." />;
@@ -247,6 +247,10 @@ export function AuditPage() {
             <tr><th className={thCls()}>When</th><th className={thCls()}>User</th><th className={thCls()}>Action</th><th className={thCls()}>Target</th></tr>
           </thead>
           <tbody className="divide-y divide-mist/70">
+            {!groupsLoaded ? (
+              <SkeletonRows rows={6} cols={4} />
+            ) : (
+            <>
             {rows.map((a) => (
               <tr key={a.id} className="transition-colors hover:bg-pine-50/40">
                 <td className={`${tdCls()} whitespace-nowrap text-soft`}>
@@ -262,6 +266,8 @@ export function AuditPage() {
               </tr>
             ))}
             {rows.length === 0 && <tr><td colSpan={4}><EmptyState icon={<History className="h-5 w-5" />} title="No matching entries" body="Permission-sensitive actions will be recorded here." /></td></tr>}
+            </>
+            )}
           </tbody>
         </table>
       </Panel>

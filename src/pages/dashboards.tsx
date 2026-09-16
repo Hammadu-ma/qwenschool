@@ -10,7 +10,7 @@ import {
   studentOf, studentResults, teacherPairs, teacherStudentIds, teachersOfStudent, timeAgo, todayISO, useApp, useLazyGroups,
 } from "../store";
 import { visibleAnnouncements } from "../rbac";
-import { Avatar, Btn, Chip, Panel, Ring, RoleBadge, Stat } from "../ui";
+import { Avatar, Btn, Chip, Panel, Ring, RoleBadge, Skel, SkeletonCards, SkeletonPanel, Stat } from "../ui";
 import type { Student } from "../types";
 
 const CAT_COLOR: Record<string, string> = { Urgent: "#c2503d", Academic: "#2c654c", Exams: "#3a6b8c", Event: "#e2a21d", General: "#5d6b62" };
@@ -36,7 +36,7 @@ function DayBanner({ title, kicker, chips, children }: { title: ReactNode; kicke
 
 function NoticeDigest() {
   const { db, currentUser } = useApp();
-  useLazyGroups("announcements");
+  const groupsLoaded = useLazyGroups("announcements");
   const nav = useNavigate();
   const notices = [...visibleAnnouncements(db, currentUser)]
     .sort((a, b) => Number(b.pinned ?? false) - Number(a.pinned ?? false) || (b.publishedAt ?? b.createdAt).localeCompare(a.publishedAt ?? a.createdAt))
@@ -50,6 +50,11 @@ function NoticeDigest() {
         </div>
         <Btn variant="ghost" size="sm" onClick={() => nav("/announcements")}>View board <ArrowRight className="h-3.5 w-3.5" /></Btn>
       </div>
+      {!groupsLoaded ? (
+        <div className="mt-3 flex flex-col gap-2.5">
+          {[0, 1, 2].map((i) => <Skel key={i} className="h-4 w-full" />)}
+        </div>
+      ) : (
       <ul className="mt-3 space-y-2.5">
         {notices.map((n) => (
           <li key={n.id}>
@@ -64,6 +69,7 @@ function NoticeDigest() {
         ))}
         {notices.length === 0 && <li className="text-[11.5px] text-soft">Nothing published for your audience yet.</li>}
       </ul>
+      )}
     </Panel>
   );
 }
@@ -71,7 +77,7 @@ function NoticeDigest() {
 /* ================================ ADMIN ================================ */
 export function AdminDashboard() {
   const { db, currentUser, yearId } = useApp();
-  useLazyGroups(["attendance", "academics", "timetable"]);
+  const groupsLoaded = useLazyGroups(["attendance", "academics", "timetable"]);
   const nav = useNavigate();
   const enrolled = db.students.filter((s) => s.enrollment?.yearId === yearId);
   const sections = db.classes.reduce((s, c) => s + c.sections.length, 0);
@@ -95,8 +101,17 @@ export function AdminDashboard() {
         <div className="mt-4 grid grid-cols-2 gap-2.5 lg:grid-cols-4">
           <Stat label="Enrolled students" value={enrolled.length} sub={`${sections} sections`} icon={<Users className="h-4.5 w-4.5" />} onClick={() => nav("/admin/students")} />
           <Stat label="Staff & accounts" value={db.users.length} sub={`${activeUsers} active`} icon={<GraduationCap className="h-4.5 w-4.5" />} tone="gold" onClick={() => nav("/admin/users")} />
-          <Stat label="Assessment structures" value={structures} sub="mark entry ready" icon={<Table2 className="h-4.5 w-4.5" />} tone="steel" onClick={() => nav("/admin/marks")} />
-          <Stat label="Registers open today" value={Math.max(0, openRegisters)} sub={openRegisters > 0 ? "need attention" : "all taken"} icon={<CalendarCheck2 className="h-4.5 w-4.5" />} tone={openRegisters > 0 ? "rust" : "pine"} onClick={() => nav("/admin/attendance")} />
+          {groupsLoaded ? (
+            <>
+              <Stat label="Assessment structures" value={structures} sub="mark entry ready" icon={<Table2 className="h-4.5 w-4.5" />} tone="steel" onClick={() => nav("/admin/marks")} />
+              <Stat label="Registers open today" value={Math.max(0, openRegisters)} sub={openRegisters > 0 ? "need attention" : "all taken"} icon={<CalendarCheck2 className="h-4.5 w-4.5" />} tone={openRegisters > 0 ? "rust" : "pine"} onClick={() => nav("/admin/attendance")} />
+            </>
+          ) : (
+            <>
+              <Skel className="h-[74px] w-full rounded-xl" />
+              <Skel className="h-[74px] w-full rounded-xl" />
+            </>
+          )}
         </div>
       </DayBanner>
 
@@ -110,6 +125,9 @@ export function AdminDashboard() {
               </div>
               <Btn variant="ghost" size="sm" onClick={() => nav("/admin/timetable")}>Timetable <ArrowRight className="h-3.5 w-3.5" /></Btn>
             </div>
+            {!groupsLoaded ? (
+              <div className="p-3"><SkeletonPanel rows={3} /></div>
+            ) : (
             <ul className="divide-y divide-mist/70">
               {todayLessons.slice(0, 6).map((t) => {
                 const subj = getSubject(db, t.subjectId);
@@ -127,6 +145,7 @@ export function AdminDashboard() {
               })}
               {todayLessons.length === 0 && <li className="px-5 py-8 text-center text-[12.5px] text-soft">No lessons scheduled today.</li>}
             </ul>
+            )}
           </Panel>
 
           <Panel className="anim-rise overflow-hidden">
@@ -182,7 +201,7 @@ export function AdminDashboard() {
 /* ================================ TEACHER ================================ */
 export function TeacherDashboard() {
   const { db, currentUser, yearId } = useApp();
-  useLazyGroups(["timetable", "homework"]);
+  const groupsLoaded = useLazyGroups(["timetable", "homework"]);
   const nav = useNavigate();
   const pairs = teacherPairs(db, currentUser);
   const myStudents = teacherStudentIds(db, currentUser);
@@ -207,8 +226,17 @@ export function TeacherDashboard() {
         <div className="mt-4 grid grid-cols-2 gap-2.5 lg:grid-cols-4">
           <Stat label="My class sections" value={pairs.length} icon={<Layers className="h-4.5 w-4.5" />} onClick={() => nav("/teacher/classes")} />
           <Stat label="My students" value={myStudents.size} icon={<Users className="h-4.5 w-4.5" />} tone="gold" onClick={() => nav("/teacher/students")} />
-          <Stat label="Lessons today" value={myLessons.length} icon={<Clock className="h-4.5 w-4.5" />} tone="steel" onClick={() => nav("/teacher/classes")} />
-          <Stat label="Homework set" value={myHomework.length} icon={<ClipboardList className="h-4.5 w-4.5" />} tone="pine" onClick={() => nav("/teacher/homework")} />
+          {groupsLoaded ? (
+            <>
+              <Stat label="Lessons today" value={myLessons.length} icon={<Clock className="h-4.5 w-4.5" />} tone="steel" onClick={() => nav("/teacher/classes")} />
+              <Stat label="Homework set" value={myHomework.length} icon={<ClipboardList className="h-4.5 w-4.5" />} tone="pine" onClick={() => nav("/teacher/homework")} />
+            </>
+          ) : (
+            <>
+              <Skel className="h-[74px] w-full rounded-xl" />
+              <Skel className="h-[74px] w-full rounded-xl" />
+            </>
+          )}
         </div>
       </DayBanner>
 
@@ -222,6 +250,9 @@ export function TeacherDashboard() {
               </div>
               <Btn variant="ghost" size="sm" onClick={() => nav("/teacher/classes")}>My classes <ArrowRight className="h-3.5 w-3.5" /></Btn>
             </div>
+            {!groupsLoaded ? (
+              <div className="p-3"><SkeletonPanel rows={3} /></div>
+            ) : (
             <ul className="divide-y divide-mist/70">
               {myLessons.sort((a, b) => a.period - b.period).map((t) => {
                 const subj = getSubject(db, t.subjectId);
@@ -240,6 +271,7 @@ export function TeacherDashboard() {
               })}
               {myLessons.length === 0 && <li className="px-5 py-8 text-center text-[12.5px] text-soft">No lessons in your sections today.</li>}
             </ul>
+            )}
           </Panel>
 
           <Panel className="anim-rise overflow-hidden">
@@ -296,7 +328,7 @@ export function TeacherDashboard() {
 /* ================================ STUDENT ================================ */
 export function StudentDashboard() {
   const { db, currentUser } = useApp();
-  useLazyGroups(["attendance", "academics", "timetable", "homework"]);
+  const groupsLoaded = useLazyGroups(["attendance", "academics", "timetable", "homework"]);
   const nav = useNavigate();
   const me = studentOf(db, currentUser);
   if (!me || !me.enrollment) {
@@ -324,10 +356,21 @@ export function StudentDashboard() {
         </>}
       >
         <div className="mt-4 grid grid-cols-2 gap-2.5 lg:grid-cols-4">
+          {!groupsLoaded ? (
+            <>
+              <Skel className="h-[74px] w-full rounded-xl" />
+              <Skel className="h-[74px] w-full rounded-xl" />
+              <Skel className="h-[74px] w-full rounded-xl" />
+              <Skel className="h-[74px] w-full rounded-xl" />
+            </>
+          ) : (
+          <>
           <Stat label="Attendance" value={`${att.pct}%`} sub={`${att.present}P · ${att.late}L · ${att.absent}A`} icon={<CalendarCheck2 className="h-4.5 w-4.5" />} onClick={() => nav("/student/attendance")} />
           <Stat label="Average grade" value={avg != null ? `${avg}%` : "—"} icon={<FileBarChart2 className="h-4.5 w-4.5" />} tone="gold" onClick={() => nav("/student/grades")} />
           <Stat label="Homework due" value={due.length} sub={due.length ? "pending submission" : "all handed in"} icon={<NotebookPen className="h-4.5 w-4.5" />} tone={due.length ? "rust" : "pine"} onClick={() => nav("/student/homework")} />
           <Stat label="My teachers" value={myTeachers.length} icon={<GraduationCap className="h-4.5 w-4.5" />} tone="steel" onClick={() => nav("/student/classes")} />
+          </>
+          )}
         </div>
       </DayBanner>
 
@@ -341,6 +384,9 @@ export function StudentDashboard() {
               </div>
               <Btn variant="ghost" size="sm" onClick={() => nav("/student/classes")}>My classes <ArrowRight className="h-3.5 w-3.5" /></Btn>
             </div>
+            {!groupsLoaded ? (
+              <div className="p-3"><SkeletonPanel rows={3} /></div>
+            ) : (
             <ul className="divide-y divide-mist/70">
               {myLessons.map((t) => {
                 const subj = getSubject(db, t.subjectId);
@@ -358,6 +404,7 @@ export function StudentDashboard() {
               })}
               {myLessons.length === 0 && <li className="px-5 py-8 text-center text-[12.5px] text-soft">No lessons today — enjoy the day!</li>}
             </ul>
+            )}
           </Panel>
 
           <Panel className="anim-rise overflow-hidden">
@@ -368,6 +415,9 @@ export function StudentDashboard() {
               </div>
               <Btn variant="ghost" size="sm" onClick={() => nav("/student/grades")}>All grades <ArrowRight className="h-3.5 w-3.5" /></Btn>
             </div>
+            {!groupsLoaded ? (
+              <div className="p-3"><SkeletonPanel rows={3} /></div>
+            ) : (
             <ul className="divide-y divide-mist/70">
               {results.slice(0, 5).map(({ st, calc, subject }) => (
                 <li key={st.id} className="flex items-center gap-3 px-5 py-2.5">
@@ -381,6 +431,7 @@ export function StudentDashboard() {
               ))}
               {results.length === 0 && <li className="px-5 py-8 text-center text-[12.5px] text-soft">No published results yet this term.</li>}
             </ul>
+            )}
           </Panel>
         </div>
 
@@ -440,7 +491,7 @@ export function StudentDashboard() {
 /* ================================ GUARDIAN ================================ */
 export function GuardianDashboard() {
   const { db, currentUser } = useApp();
-  useLazyGroups(["attendance", "academics", "fees", "homework"]);
+  const groupsLoaded = useLazyGroups(["attendance", "academics", "fees", "homework"]);
   const nav = useNavigate();
   const kids = childrenOf(db, currentUser);
   const [childId, setChildId] = useState(kids[0]?.id ?? "");
@@ -499,9 +550,19 @@ export function GuardianDashboard() {
 
       <div className="anim-rise grid grid-cols-2 gap-2.5 lg:grid-cols-4">
         <Stat label="Class & section" value={child.enrollment ? sectionShort(db, child.enrollment.classId, child.enrollment.sectionId).split(" · ")[1] ?? "—" : "—"} sub={db.classes.find((c) => c.id === child.enrollment?.classId)?.name} icon={<BookOpen className="h-4.5 w-4.5" />} onClick={() => nav("/guardian/children")} />
-        <Stat label="Attendance" value={`${att.pct}%`} sub={`${att.absent} absences`} icon={<CalendarCheck2 className="h-4.5 w-4.5" />} tone={att.pct >= 90 ? "pine" : "gold"} onClick={() => nav("/guardian/attendance")} />
-        <Stat label="Average grade" value={avg != null ? `${avg}%` : "—"} icon={<FileBarChart2 className="h-4.5 w-4.5" />} tone="gold" onClick={() => nav("/guardian/grades")} />
-        <Stat label="Fees outstanding" value={outstanding > 0 ? `ETB ${outstanding.toLocaleString()}` : "Clear"} icon={<Wallet className="h-4.5 w-4.5" />} tone={outstanding > 0 ? "rust" : "pine"} />
+        {groupsLoaded ? (
+          <>
+            <Stat label="Attendance" value={`${att.pct}%`} sub={`${att.absent} absences`} icon={<CalendarCheck2 className="h-4.5 w-4.5" />} tone={att.pct >= 90 ? "pine" : "gold"} onClick={() => nav("/guardian/attendance")} />
+            <Stat label="Average grade" value={avg != null ? `${avg}%` : "—"} icon={<FileBarChart2 className="h-4.5 w-4.5" />} tone="gold" onClick={() => nav("/guardian/grades")} />
+            <Stat label="Fees outstanding" value={outstanding > 0 ? `ETB ${outstanding.toLocaleString()}` : "Clear"} icon={<Wallet className="h-4.5 w-4.5" />} tone={outstanding > 0 ? "rust" : "pine"} />
+          </>
+        ) : (
+          <>
+            <Skel className="h-[74px] w-full rounded-xl" />
+            <Skel className="h-[74px] w-full rounded-xl" />
+            <Skel className="h-[74px] w-full rounded-xl" />
+          </>
+        )}
       </div>
 
       <div className="grid gap-5 lg:grid-cols-3">
@@ -514,6 +575,9 @@ export function GuardianDashboard() {
               </div>
               <Btn variant="ghost" size="sm" onClick={() => nav("/guardian/grades")}>Full grades <ArrowRight className="h-3.5 w-3.5" /></Btn>
             </div>
+            {!groupsLoaded ? (
+              <div className="p-3"><SkeletonPanel rows={3} /></div>
+            ) : (
             <ul className="divide-y divide-mist/70">
               {results.slice(0, 6).map(({ st, calc, subject }) => (
                 <li key={st.id} className="flex items-center gap-3 px-5 py-2.5">
@@ -527,6 +591,7 @@ export function GuardianDashboard() {
               ))}
               {results.length === 0 && <li className="px-5 py-8 text-center text-[12.5px] text-soft">No published results yet this term.</li>}
             </ul>
+            )}
           </Panel>
 
           <Panel className="anim-rise overflow-hidden">
@@ -559,6 +624,9 @@ export function GuardianDashboard() {
               </div>
               <Btn variant="ghost" size="sm" onClick={() => nav("/guardian/homework")}>All <ArrowRight className="h-3.5 w-3.5" /></Btn>
             </div>
+            {!groupsLoaded ? (
+              <div className="p-3"><SkeletonPanel rows={3} /></div>
+            ) : (
             <ul className="divide-y divide-mist/70">
               {due.slice(0, 4).map((h) => (
                 <li key={h.id} className="flex items-center gap-2.5 px-5 py-2.5">
@@ -571,6 +639,7 @@ export function GuardianDashboard() {
               ))}
               {due.length === 0 && <li className="flex items-center gap-2 px-5 py-6 text-[12px] font-semibold text-pine-700"><CheckCircle2 className="h-4 w-4" /> All handed in.</li>}
             </ul>
+            )}
           </Panel>
           <NoticeDigest />
         </div>

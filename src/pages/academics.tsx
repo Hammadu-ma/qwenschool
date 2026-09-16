@@ -19,8 +19,8 @@ import {
 import { hasPermission, isSuperAdmin, pushAudit, pushNotifications } from "../rbac";
 import { downloadCsv, drawThemedHeader, drawThemedSectionLabel, drawThemedTable, newThemedDoc } from "../lib/exportKit";
 import {
-  Avatar, Btn, Chip, EmptyState, Field, Modal, PageHead, Panel, Select, Stat, Tabs,
-  TextArea, TextInput, tdCls, thCls,
+  Avatar, Btn, Chip, EmptyState, Field, Modal, PageHead, Panel, Select, SkeletonCards, SkeletonPanel, SkeletonRows,
+  Stat, Tabs, TextArea, TextInput, tdCls, thCls,
 } from "../ui";
 import { AccessDenied } from "./Auth";
 
@@ -92,7 +92,7 @@ function exportMarkSheetPdf(db: DB, structure: AssessmentStructure, roster: Stud
 /* ================= mark entry (admin full / teacher scoped) ================= */
 export function MarkEntryPage() {
   const { db, currentUser, yearId, setYear, update, toast } = useApp();
-  useLazyGroups("academics");
+  const groupsLoaded = useLazyGroups("academics");
   const role = currentUser?.role ?? "admin";
   const isAdmin = role === "admin";
   const pairs = teacherPairs(db, currentUser);
@@ -336,7 +336,9 @@ export function MarkEntryPage() {
         )}
       </div>
 
-      {allowedStructures.length === 0 ? (
+      {!groupsLoaded ? (
+        <SkeletonPanel />
+      ) : allowedStructures.length === 0 ? (
         <Panel className="anim-rise"><EmptyState icon={<Table2 className="h-5 w-5" />} title="No assessment structures in your scope" body={isAdmin ? "Create a structure: subject + period + assessments with max marks and weights." : "Structures appear here once the admin configures them for your subjects, or ask the office."} action={isAdmin ? <Btn onClick={() => setEditStruct("new")}><Plus className="h-4 w-4" /> New structure</Btn> : undefined} /></Panel>
       ) : !structure ? (
         <Panel className="anim-rise">
@@ -1051,7 +1053,7 @@ function SubjectModal({ existing, onClose }: { existing?: Subject; onClose: () =
    ========================================================================= */
 export function TimetablePage() {
   const { db, currentUser } = useApp();
-  useLazyGroups("timetable");
+  const groupsLoaded = useLazyGroups("timetable");
   if (!hasPermission(db, currentUser, "academics.view")) {
     return <AccessDenied required="academics.view" reason="You don't have permission to view the timetable." />;
   }
@@ -1081,6 +1083,9 @@ export function TimetablePage() {
         <p className="anim-rise mb-3 rounded-lg border border-gold-200 bg-gold-100/60 px-3 py-2 text-[12px] font-semibold text-gold-700">No teacher–subject assignments exist for this class/section yet — set those up first so periods can be assigned.</p>
       )}
 
+      {!groupsLoaded ? (
+        <SkeletonPanel rows={PERIODS.length} />
+      ) : (
       <Panel className="anim-rise overflow-x-auto">
         <table className="w-full min-w-[720px]">
           <thead className="border-b border-mist bg-paper/60">
@@ -1121,6 +1126,7 @@ export function TimetablePage() {
           </tbody>
         </table>
       </Panel>
+      )}
 
       {editCell && (
         <TimetableCellModal
@@ -1182,7 +1188,7 @@ function TimetableCellModal({ day, period, classId, sectionId, existing, availab
    ========================================================================= */
 export function AttendancePage() {
   const { db, currentUser, update, toast } = useApp();
-  useLazyGroups("attendance");
+  const groupsLoaded = useLazyGroups("attendance");
   const role = currentUser?.role ?? "admin";
 
   if (role === "student" || role === "guardian") {
@@ -1249,6 +1255,13 @@ export function AttendancePage() {
         <Field label="Date" className="w-40"><TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} max={todayISO()} /></Field>
       </PageHead>
 
+      {!groupsLoaded ? (
+        <>
+          <div className="anim-rise mb-4"><SkeletonCards n={4} /></div>
+          <SkeletonPanel rows={Math.min(roster.length || 5, 8)} />
+        </>
+      ) : (
+      <>
       <div className="anim-rise mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Stat label="Present" value={counts.present} tone="pine" icon={<UserCheck className="h-4.5 w-4.5" />} />
         <Stat label="Absent" value={counts.absent} tone="rust" icon={<UserX className="h-4.5 w-4.5" />} />
@@ -1287,6 +1300,8 @@ export function AttendancePage() {
           </tbody>
         </table>
       </Panel>
+      </>
+      )}
     </div>
   );
 }
@@ -1480,7 +1495,7 @@ function AssignmentModal({ existing, onClose }: { existing?: Assignment; onClose
    ========================================================================= */
 export function ReportsPage() {
   const { db, currentUser } = useApp();
-  useLazyGroups("academics");
+  const groupsLoaded = useLazyGroups("academics");
   const role = currentUser?.role ?? "admin";
 
   if (role === "student" || role === "guardian") {
@@ -1507,6 +1522,9 @@ export function ReportsPage() {
         <Field label="Search" className="w-48"><TextInput value={q} onChange={(e) => setQ(e.target.value)} placeholder="Student name…" /></Field>
       </PageHead>
 
+      {!groupsLoaded ? (
+        <SkeletonPanel rows={Math.min(roster.length || 5, 8)} />
+      ) : (
       <Panel className="anim-rise overflow-hidden">
         <table className="w-full">
           <thead className="border-b border-mist bg-paper/60"><tr><th className={`${thCls()} w-10`}>#</th><th className={thCls()}>Student</th><th className={thCls()}>Section</th><th className={`${thCls()} text-center`}>Average</th><th className={thCls()}></th></tr></thead>
@@ -1527,6 +1545,7 @@ export function ReportsPage() {
           </tbody>
         </table>
       </Panel>
+      )}
 
       {openStudent && <ReportCardModal student={openStudent} onClose={() => setOpenStudent(null)} adminView />}
     </div>
@@ -1536,7 +1555,7 @@ export function ReportsPage() {
 /** Student/guardian: only ever see PUBLISHED results. */
 function ReportCardViewer() {
   const { db, currentUser } = useApp();
-  useLazyGroups("academics");
+  const groupsLoaded = useLazyGroups("academics");
   const role = currentUser?.role;
   const kids = role === "guardian" ? childrenOf(db, currentUser) : (studentOf(db, currentUser) ? [studentOf(db, currentUser)!] : []);
   const [selId, setSelId] = useState(kids[0]?.id ?? "");
@@ -1550,7 +1569,7 @@ function ReportCardViewer() {
           <Field label="Child" className="w-48"><Select value={selId} onChange={(e) => setSelId(e.target.value)}>{kids.map((k) => <option key={k.id} value={k.id}>{shortName(k)}</option>)}</Select></Field>
         )}
       </PageHead>
-      <ReportCardBody student={student} publishedOnly />
+      {!groupsLoaded ? <SkeletonPanel rows={3} /> : <ReportCardBody student={student} publishedOnly />}
     </div>
   );
 }
@@ -1684,7 +1703,7 @@ function ReportCardBody({ student, publishedOnly }: { student: Student; publishe
    ========================================================================= */
 export function FeesPage() {
   const { db, currentUser } = useApp();
-  useLazyGroups("fees");
+  const groupsLoaded = useLazyGroups("fees");
   if (!hasPermission(db, currentUser, "fees.view")) {
     return <AccessDenied required="fees.view" reason="You don't have permission to view fee records." />;
   }
@@ -1717,6 +1736,13 @@ export function FeesPage() {
         <Field label="Search" className="w-44"><TextInput value={q} onChange={(e) => setQ(e.target.value)} placeholder="Student name…" /></Field>
       </PageHead>
 
+      {!groupsLoaded ? (
+        <>
+          <div className="anim-rise mb-4"><SkeletonCards n={3} /></div>
+          <SkeletonPanel rows={Math.min(roster.length || 5, 8)} />
+        </>
+      ) : (
+      <>
       <div className="anim-rise mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
         <Stat label="Billed" value={`Br ${totals.billed.toLocaleString()}`} tone="steel" icon={<Banknote className="h-4.5 w-4.5" />} />
         <Stat label="Collected" value={`Br ${totals.paid.toLocaleString()}`} tone="pine" icon={<Wallet className="h-4.5 w-4.5" />} />
@@ -1744,6 +1770,8 @@ export function FeesPage() {
           </tbody>
         </table>
       </Panel>
+      </>
+      )}
 
       {openStudent && <FeeLedgerModal student={openStudent} canManage={canManage} onClose={() => setOpenStudent(null)} />}
     </div>
@@ -1926,7 +1954,7 @@ function FeeLedgerModal({ student, canManage, onClose }: { student: Student; can
    ========================================================================= */
 export function HomeworkPage() {
   const { db, currentUser } = useApp();
-  useLazyGroups("homework");
+  const groupsLoaded = useLazyGroups("homework");
   const role = currentUser?.role ?? "admin";
 
   if (role === "student") return <StudentHomework />;
@@ -1968,6 +1996,10 @@ export function HomeworkPage() {
       </PageHead>
 
       <div className="space-y-2.5">
+        {!groupsLoaded ? (
+          <SkeletonPanel rows={Math.min(rows.length || 4, 6)} />
+        ) : (
+        <>
         {rows.map((h) => {
           const roster = studentsOf(db, h.classId, h.sectionId);
           const submittedCount = roster.filter((s) => h.submitted.includes(s.id)).length;
@@ -1998,6 +2030,8 @@ export function HomeworkPage() {
           );
         })}
         {rows.length === 0 && <Panel className="anim-rise"><EmptyState icon={<PenLine className="h-5 w-5" />} title="No homework set yet" body="Set homework for a class & subject you teach." action={canManage ? <Btn onClick={() => setEdit("new")}><Plus className="h-4 w-4" /> Set homework</Btn> : undefined} /></Panel>}
+        </>
+        )}
       </div>
 
       {edit && <HomeworkModal existing={edit === "new" ? undefined : edit} teacherPairs={pairs} isAdmin={isAdmin} onClose={() => setEdit(null)} />}

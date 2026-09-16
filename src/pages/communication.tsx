@@ -11,7 +11,7 @@ import {
   unreadInConversation, unreadNotifications, userNotifications, visibleAnnouncements, audienceUserIds,
 } from "../rbac";
 import type { Announcement, Audience, Conversation, User } from "../types";
-import { Btn, Chip, EmptyState, Field, Modal, PageHead, Panel, RoleBadge, Select, Tabs, TextArea, TextInput, UserAvatar, tdCls, thCls } from "../ui";
+import { Btn, Chip, EmptyState, Field, Modal, PageHead, Panel, RoleBadge, Select, SkeletonPanel, SkeletonRows, Tabs, TextArea, TextInput, UserAvatar, tdCls, thCls } from "../ui";
 import { AccessDenied } from "./Auth";
 
 /* ================= shared bits ================= */
@@ -75,7 +75,7 @@ function AudiencePicker({ value, onChange }: { value: Audience; onChange: (a: Au
 /* ================= Announcements ================= */
 export function AnnouncementsPage() {
   const { db, currentUser, update, toast } = useApp();
-  useLazyGroups("announcements");
+  const groupsLoaded = useLazyGroups("announcements");
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState("all");
   const canCreate = canCreateAnnouncement(db, currentUser);
@@ -114,6 +114,10 @@ export function AnnouncementsPage() {
       </div>
 
       <div className="space-y-3">
+        {!groupsLoaded ? (
+          <SkeletonPanel rows={4} />
+        ) : (
+        <>
         {list.map((a) => {
           const st = effectiveAnnouncementStatus(a);
           const cm = CAT_META[a.category] ?? CAT_META.General;
@@ -156,6 +160,8 @@ export function AnnouncementsPage() {
         })}
         {list.length === 0 && (
           <Panel><EmptyState icon={<Megaphone className="h-5 w-5" />} title="No announcements here" body="Announcements for your audience will appear on this board." /></Panel>
+        )}
+        </>
         )}
       </div>
 
@@ -221,7 +227,7 @@ function AnnouncementModal({ onClose, onSave }: { onClose: () => void; onSave: (
 /* ================= Messages (inbox + thread) ================= */
 export function MessagesPage() {
   const { db, currentUser, update, toast } = useApp();
-  useLazyGroups("messaging");
+  const groupsLoaded = useLazyGroups("messaging");
   const { id } = useParams();
   const nav = useNavigate();
   const [composeWith, setComposeWith] = useState<User | null>(null);
@@ -303,6 +309,10 @@ export function MessagesPage() {
         <Panel className="anim-rise h-fit overflow-hidden">
           <div className="border-b border-mist bg-paper/60 px-4 py-3 text-[11px] font-bold uppercase tracking-[0.12em] text-soft">Inbox</div>
           <ul className="max-h-[560px] divide-y divide-mist/70 overflow-y-auto">
+            {!groupsLoaded ? (
+              <li className="p-3"><SkeletonPanel rows={4} /></li>
+            ) : (
+            <>
             {convs.map((c) => {
               const peer = db.users.find((u) => u.id === c.participants.find((p) => p !== currentUser?.id));
               const last = [...db.messages.filter((m) => m.conversationId === c.id)].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
@@ -324,12 +334,16 @@ export function MessagesPage() {
               );
             })}
             {convs.length === 0 && <li className="px-4 py-10 text-center text-[12.5px] text-soft">No conversations yet.</li>}
+            </>
+            )}
           </ul>
         </Panel>
 
         {/* thread */}
         <Panel className="anim-rise flex min-h-[480px] flex-col overflow-hidden">
-          {!active ? (
+          {!groupsLoaded ? (
+            <SkeletonPanel rows={5} />
+          ) : !active ? (
             <EmptyState icon={<Inbox className="h-5 w-5" />} title="Select a conversation" body="Pick a conversation from the inbox, or start a new one with someone you're connected to." />
           ) : (
             <>
@@ -466,7 +480,7 @@ function ReportModal({ onClose, conv, messageId }: { onClose: () => void; conv: 
 /* ================= Notifications ================= */
 export function NotificationsPage() {
   const { db, currentUser, update } = useApp();
-  useLazyGroups("notifications");
+  const groupsLoaded = useLazyGroups("notifications");
   const list = userNotifications(db, currentUser);
   const ICON: Record<string, typeof Bell> = { announcement: Megaphone, message: Inbox, homework: Send, result: ShieldAlert, attendance: CalendarDays, event: CalendarDays, system: Bell };
   const markAll = () => update((d) => { d.notifications.forEach((n) => { if (n.userId === currentUser?.id) n.read = true; }); });
@@ -477,6 +491,10 @@ export function NotificationsPage() {
       </PageHead>
       <Panel className="anim-rise overflow-hidden">
         <ul className="divide-y divide-mist/70">
+          {!groupsLoaded ? (
+            <li className="p-3"><SkeletonPanel rows={4} /></li>
+          ) : (
+          <>
           {list.map((n) => {
             const I = ICON[n.type] ?? Bell;
             return (
@@ -496,6 +514,8 @@ export function NotificationsPage() {
             );
           })}
           {list.length === 0 && <li><EmptyState icon={<Bell className="h-5 w-5" />} title="All caught up" body="You have no notifications right now." /></li>}
+          </>
+          )}
         </ul>
       </Panel>
     </div>
@@ -505,7 +525,7 @@ export function NotificationsPage() {
 /* ================= Events ================= */
 export function EventsPage() {
   const { db, currentUser, update, toast } = useApp();
-  useLazyGroups("events");
+  const groupsLoaded = useLazyGroups("events");
   const [open, setOpen] = useState(false);
   const canManage = hasPermission(db, currentUser, "events.manage");
   const visible = db.events
@@ -518,6 +538,10 @@ export function EventsPage() {
       </PageHead>
       <Panel className="anim-rise overflow-hidden">
         <ul className="divide-y divide-mist/70">
+          {!groupsLoaded ? (
+            <li className="p-3"><SkeletonPanel rows={4} /></li>
+          ) : (
+          <>
           {visible.map((e) => {
             const cm = CAT_META[e.category] ?? CAT_META.General;
             const d = new Date(e.date + "T00:00:00");
@@ -538,6 +562,8 @@ export function EventsPage() {
             );
           })}
           {visible.length === 0 && <li><EmptyState icon={<CalendarDays className="h-5 w-5" />} title="No events scheduled" body="The calendar is clear." /></li>}
+          </>
+          )}
         </ul>
       </Panel>
       {open && <EventModal onClose={() => setOpen(false)} onSave={(ev) => { update((d) => { d.events.push(ev); pushAudit(d, currentUser, "event.create", ev.title); }); toast("Event added."); setOpen(false); }} />}
@@ -618,7 +644,7 @@ export function ContactsPage() {
 /* ================= Moderation (for communication.moderate) ================= */
 export function ModerationPage() {
   const { db, currentUser, update, toast } = useApp();
-  useLazyGroups(["messaging", "reports"]);
+  const groupsLoaded = useLazyGroups(["messaging", "reports"]);
   if (!hasPermission(db, currentUser, "communication.moderate")) {
     return <AccessDenied required="communication.moderate" reason="Only authorized moderators can review reported communication." />;
   }
@@ -640,6 +666,10 @@ export function ModerationPage() {
             <tr><th className={thCls()}>Message</th><th className={thCls()}>Reason</th><th className={thCls()}>Reported by</th><th className={thCls()}>Status</th><th className={thCls()}></th></tr>
           </thead>
           <tbody className="divide-y divide-mist/70">
+            {!groupsLoaded ? (
+              <SkeletonRows rows={4} cols={5} />
+            ) : (
+            <>
             {reports.map((r) => {
               const msg = db.messages.find((m) => m.id === r.messageId);
               const reporter = db.users.find((u) => u.id === r.reporterId);
@@ -662,6 +692,8 @@ export function ModerationPage() {
               );
             })}
             {reports.length === 0 && <tr><td colSpan={5}><EmptyState icon={<ShieldAlert className="h-5 w-5" />} title="Nothing to review" body="No messages have been reported." /></td></tr>}
+            </>
+            )}
           </tbody>
         </table>
       </Panel>

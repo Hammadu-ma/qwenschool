@@ -156,6 +156,67 @@ export function Panel({ className = "", children }: { className?: string; childr
   return <div className={`rounded-xl border border-mist bg-card shadow-[0_1px_2px_rgba(13,33,26,0.05)] ${className}`}>{children}</div>;
 }
 
+/* ================= loading skeletons =================
+ * Shown while a page's lazy-loaded feature group(s) are still in flight
+ * (see useLazyGroups in store.tsx) so an empty array mid-fetch never
+ * reads as "no records" — the skeleton fills the same slot the real
+ * content will occupy once the group finishes loading. */
+export function Skel({ className = "" }: { className?: string }) {
+  return <div className={`skel rounded-md ${className}`} />;
+}
+
+/** Drop-in replacement for a data table's <tbody> while its rows are loading. */
+export function SkeletonRows({ rows = 5, cols = 4 }: { rows?: number; cols?: number }) {
+  return (
+    <>
+      {Array.from({ length: rows }).map((_, r) => (
+        <tr key={r} className="border-t border-mist/70">
+          {Array.from({ length: cols }).map((__, c) => (
+            <td key={c} className={tdCls()}>
+              <Skel className={`h-3.5 ${c === 0 ? "w-28" : "w-16"}`} />
+            </td>
+          ))}
+        </tr>
+      ))}
+    </>
+  );
+}
+
+/** A small grid of shimmering stat/card placeholders (dashboards, summaries). */
+export function SkeletonCards({ n = 4 }: { n?: number }) {
+  return (
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      {Array.from({ length: n }).map((_, i) => (
+        <Panel key={i} className="p-4">
+          <Skel className="mb-2 h-3 w-16" />
+          <Skel className="h-6 w-12" />
+        </Panel>
+      ))}
+    </div>
+  );
+}
+
+/** Full-panel loading placeholder for whichever page section is still
+ *  waiting on its lazy group — a list of shimmering rows inside a Panel,
+ *  standing in for whatever the real content (table, list, cards) will be. */
+export function SkeletonPanel({ rows = 5 }: { rows?: number }) {
+  return (
+    <Panel className="p-4">
+      <div className="flex flex-col gap-3">
+        {Array.from({ length: rows }).map((_, i) => (
+          <div key={i} className="flex items-center gap-3">
+            <Skel className="h-9 w-9 shrink-0 rounded-lg" />
+            <div className="flex-1">
+              <Skel className="mb-1.5 h-3 w-1/3" />
+              <Skel className="h-2.5 w-1/5" />
+            </div>
+          </div>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
 export function EmptyState({ icon, title, body, action }: { icon: ReactNode; title: string; body: string; action?: ReactNode }) {
   return (
     <div className="flex flex-col items-center justify-center gap-2 px-6 py-14 text-center">

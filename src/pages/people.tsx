@@ -12,8 +12,8 @@ import {
   todayISO, uid, useApp, useLazyGroups,
 } from "../store";
 import {
-  Avatar, Btn, Chip, EmptyState, Field, Modal, PageHead, Panel, Ring, RoleBadge, Select, Tabs, TextInput,
-  UserAvatar, UsernameConflictModal, tdCls, thCls,
+  Avatar, Btn, Chip, EmptyState, Field, Modal, PageHead, Panel, Ring, RoleBadge, Select, Skel, SkeletonPanel, SkeletonRows,
+  Tabs, TextInput, UserAvatar, UsernameConflictModal, tdCls, thCls,
 } from "../ui";
 import { AccessDenied } from "./Auth";
 import { defaultRoleIdFor, hasPermission, pushAudit } from "../rbac";
@@ -22,7 +22,7 @@ import { IDCardModal, RegistrationWizard } from "./registration";
 /* ================= students directory (role-scoped) ================= */
 export function StudentsPage({ scoped }: { scoped?: boolean }) {
   const { db, currentUser, yearId, update, toast } = useApp();
-  useLazyGroups("attendance");
+  const groupsLoaded = useLazyGroups("attendance");
   const nav = useNavigate();
   const [q, setQ] = useState("");
   const [cls, setCls] = useState("");
@@ -115,7 +115,11 @@ export function StudentsPage({ scoped }: { scoped?: boolean }) {
                       <td className={`${tdCls()} hidden text-soft sm:table-cell`}>{fmtDate(s.admission.date)}</td>
                       <td className={tdCls()}>
                         <span className="flex items-center gap-2">
-                          <Ring pct={att.pct} size={34} stroke={4} label={`${Math.round(att.pct)}`} color={att.pct >= 90 ? "var(--color-pine-600)" : att.pct >= 75 ? "var(--color-gold-500)" : "var(--color-rust-500)"} />
+                          {groupsLoaded ? (
+                            <Ring pct={att.pct} size={34} stroke={4} label={`${Math.round(att.pct)}`} color={att.pct >= 90 ? "var(--color-pine-600)" : att.pct >= 75 ? "var(--color-gold-500)" : "var(--color-rust-500)"} />
+                          ) : (
+                            <Skel className="h-[34px] w-[34px] rounded-full" />
+                          )}
                         </span>
                       </td>
                       <td className={`${tdCls()} text-right`}>
@@ -268,7 +272,7 @@ function RegisterStudentModal({ onClose, onSaved }: { onClose: () => void; onSav
 /* ================= student profile (entity-guarded) ================= */
 export function StudentProfilePage() {
   const { db, currentUser } = useApp();
-  useLazyGroups(["attendance", "academics", "homework", "fees"]);
+  const groupsLoaded = useLazyGroups(["attendance", "academics", "homework", "fees"]);
   const { id } = useParams();
   const [tab, setTab] = useState("overview");
   const [editOpen, setEditOpen] = useState(false);
@@ -328,9 +332,9 @@ export function StudentProfilePage() {
         </div>
         <div className="grid grid-cols-2 gap-px bg-mist sm:grid-cols-4">
           {[
-            { label: "Attendance", node: <Ring pct={att.pct} size={42} stroke={5} color={att.pct >= 90 ? "var(--color-pine-600)" : "var(--color-gold-500)"} /> },
-            { label: "Average", node: <span className="font-display text-[20px] font-extrabold text-pine-800 sm:text-[24px]">{avg != null ? `${avg}%` : "—"}</span> },
-            { label: "Grade", node: <span className="font-display text-[20px] font-extrabold text-ink sm:text-[24px]">{avg != null ? gradeFor(avg, db.grading).grade : "—"}</span> },
+            { label: "Attendance", node: groupsLoaded ? <Ring pct={att.pct} size={42} stroke={5} color={att.pct >= 90 ? "var(--color-pine-600)" : "var(--color-gold-500)"} /> : <Skel className="h-[42px] w-[42px] rounded-full" /> },
+            { label: "Average", node: groupsLoaded ? <span className="font-display text-[20px] font-extrabold text-pine-800 sm:text-[24px]">{avg != null ? `${avg}%` : "—"}</span> : <Skel className="h-6 w-12" /> },
+            { label: "Grade", node: groupsLoaded ? <span className="font-display text-[20px] font-extrabold text-ink sm:text-[24px]">{avg != null ? gradeFor(avg, db.grading).grade : "—"}</span> : <Skel className="h-6 w-8" /> },
             { label: "Guardian", node: <span className="text-[13px] font-bold text-ink">{guardianOfStudent(db, s.id)?.name ?? s.guardian.father}</span> },
           ].map((x) => (
             <div key={x.label} className="bg-card px-3.5 py-3 sm:px-4">
@@ -358,6 +362,10 @@ export function StudentProfilePage() {
       </div>
 
       <div className="mt-4 space-y-4">
+        {!groupsLoaded && tab !== "overview" ? (
+          <SkeletonPanel rows={5} />
+        ) : (
+        <>
         {tab === "overview" && (
           <div className="anim-rise grid gap-4 md:grid-cols-3">
             <Panel className="p-5">
@@ -542,6 +550,8 @@ export function StudentProfilePage() {
               })}
             </ol>
           </Panel>
+        )}
+        </>
         )}
       </div>
 
