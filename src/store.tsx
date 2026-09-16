@@ -1,40 +1,24 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useQuery, useQueries, useQueryClient } from "@tanstack/react-query";
 import type {
   AssessmentStructure, Audience, DB, Role, Student, User,
 } from "./types";
 import { buildSeed } from "./data/seed";
 import { supabase, isSupabaseConfigured, usernameToEmail } from "./lib/supabase";
 import {
-  hydrateCore, hydrateGroup, ALL_LAZY_GROUPS, sync, setProfileId, loadProfileForSession,
+  hydrate, hydrateCore, hydrateGroup, ALL_LAZY_GROUPS, sync, setProfileId, loadProfileForSession,
   type DbMode, type LazyGroup,
 } from "./lib/backend";
-import { clearPersistedCache } from "./lib/queryClient";
+import { loadCachedDb, saveCachedDb, clearCachedDb } from "./lib/dbCache";
 
-/** Which DB fields each lazy group owns — the mirror image of what
- *  hydrateGroup() returns for that group. Used by update() to route an
- *  optimistic write into the right query-cache entry, and by the db-assembly
- *  memo to know what's "core" vs "group" data. Keeping this list next to
- *  hydrateGroup()'s switch in backend.ts is the one place both have to agree. */
-const GROUP_FIELDS: Record<LazyGroup, (keyof DB)[]> = {
-  academics: ["structures", "assessmentMarks", "submissions", "grading"],
-  attendance: ["attendance"],
-  fees: ["fees"],
-  homework: ["homework"],
-  timetable: ["timetable"],
-  announcements: ["announcements"],
-  messaging: ["conversations", "messages"],
-  notifications: ["notifications"],
-  events: ["events"],
-  audit: ["audit"],
-  reports: ["reports"],
-};
+/** The small reference data hydrateCore() loads eagerly — used to merge a
+ *  fresh core hydrate into whatever lazy-group data an old cache still has,
+ *  instead of the fresh (core-only) snapshot blowing that away. */
 const CORE_FIELDS = ["settings", "years", "terms", "classes", "subjects", "teachers", "assignments", "students", "roles", "users"] as const;
-
-function pick<T extends object, K extends keyof T>(obj: T, keys: readonly K[]): Pick<T, K> {
-  const out = {} as Pick<T, K>;
-  for (const k of keys) out[k] = obj[k];
-  return out;
+function mergeCoreIntoCached(freshCore: DB, cachedDb: DB | null): DB {
+  if (!cachedDb) return freshCore;
+  const merged: DB = { ...cachedDb };
+  for (const f of CORE_FIELDS) (merged as any)[f] = (freshCore as any)[f];
+  return merged;
 }
 
 export const uid = () => crypto.randomUUID();
@@ -356,114 +340,109 @@ interface Ctx {
 
 const AppCtx = createContext<Ctx | null>(null);
 
-const coreQueryKey = ["core"] as const;
-const groupQueryKey = (g: LazyGroup) => ["group", g] as const;
-
 export function AppProvider({ children }: { children: ReactNode }) {
-  const queryClient = useQueryClient();
-
-  // No persisted cache to wait on (see lib/queryClient.ts) — every mount of
-  // this provider (i.e. every fresh tab / hard reload) goes straight to
-  // Supabase via hydrateCore(). The boot spinner covers exactly this one
-  // round trip.
-  const coreQuery = useQuery({
-    queryKey: coreQueryKey,
-    queryFn: hydrateCore,
-  });
-
-  const coreDb = coreQuery.data?.db ?? buildSeed();
-  const mode: DbMode = coreQuery.data?.mode ?? "off";
-  const schemaMissing = coreQuery.data?.schemaMissing ?? false;
-
-  // One query per lazy group, always "mounted" here so their cache entries
-  // stay subscribed and any page's useLazyGroups() sees fresh reads — but
-  // `enabled: false` so none of them fetch on their own. ensureGroup() below
-  // triggers the actual fetch imperatively via queryClient.fetchQuery(),
-  // which dedupes natively: two pages mounting the same group in the same
-  // tick still only fire one request.
-  const groupQueries = useQueries({
-    queries: ALL_LAZY_GROUPS.map((g) => ({
-      queryKey: groupQueryKey(g),
-      queryFn: () => hydrateGroup(g, coreDb),
-      enabled: false as const,
-    })),
-  });
-
-  // Assembled view every page reads via useApp().db — core reference data
-  // plus whatever lazy groups have been fetched so far this session. This is
-  // the one place the "many small queries" model gets flattened back into
-  // the single DB shape the rest of the app (pages, permissions.ts, rbac.ts)
-  // already expects, so none of that code has to change for Phase 2.
-  const db: DB = useMemo(() => {
-    if (mode !== "live") return coreDb;
-    let merged = coreDb;
-    ALL_LAZY_GROUPS.forEach((g, i) => {
-      const partial = groupQueries[i].data;
-      if (partial) merged = { ...merged, ...partial };
-    });
-    return merged;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [coreDb, mode, ...groupQueries.map((q) => q.data)]);
-
-  const ready = mode !== "off" || coreQuery.isFetched || coreQuery.isError;
+  const cached = useMemo(() => (isSupabaseConfigured ? loadCachedDb() : null), []);
+  const [db, setDb] = useState<DB>(() => cached ?? buildSeed());
+  // A cache hit means we can paint immediately — the real fetch still runs
+  // in the background and silently replaces this the moment it lands.
+  const [ready, setReady] = useState(!!cached);
+  const [mode, setMode] = useState<DbMode>(cached ? "live" : "off");
+  const [schemaMissing, setSchemaMissing] = useState(false);
   const [sessionUserId, setSessionUserId] = useState<string | null>(null);
-  const [yearId, setYearId] = useState("");
+  const [yearId, setYearId] = useState(() => cached ? (cached.years.find((y) => y.active)?.id ?? cached.years[0]?.id ?? "") : "");
   const [toastState, setToastState] = useState<Toast | null>(null);
   const dbRef = useRef(db);
-  dbRef.current = db;
+  // Which feature groups this session has actually fetched — tracked with
+  // both a ref (so ensureGroup can check synchronously and never double-fire
+  // for two components that mount in the same tick) and state (so isGroupLoaded
+  // reads trigger a re-render once a fetch lands).
+  const loadedGroupsRef = useRef<Set<LazyGroup>>(new Set());
+  const loadingGroupsRef = useRef<Set<LazyGroup>>(new Set());
+  const [loadedGroupsTick, setLoadedGroupsTick] = useState(0);
 
-  // Keep yearId pointed at the active year once core data is available/changes.
+  /* Boot: check the session first (a local token read, not a network round
+   * trip in the common case) so — combined with a cache hit — we can paint
+   * the correct screen (dashboard or login) immediately. hydrate() then
+   * refreshes quietly in the background; no visible reconnect, the data
+   * just becomes current a moment later. */
   useEffect(() => {
-    if (!coreQuery.data) return;
-    setYearId((prev) => (prev && coreDb.years.some((y) => y.id === prev) ? prev : coreDb.years.find((y) => y.active)?.id ?? coreDb.years[0]?.id ?? ""));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [coreQuery.data]);
-
-  /* Boot: check the Supabase session (a local token read, not a network
-   * round trip in the common case) so — combined with a persisted-cache hit
-   * — we can paint the correct screen (dashboard or login) immediately. */
-  useEffect(() => {
-    if (!isSupabaseConfigured || !supabase) return;
     let mounted = true;
-    supabase.auth.getSession().then(({ data }) => {
+    (async () => {
+      if (isSupabaseConfigured && supabase) {
+        const { data } = await supabase.auth.getSession();
+        const uid = data.session?.user?.id ?? null;
+        if (uid) { setSessionUserId(uid); setProfileId(uid); }
+        supabase.auth.onAuthStateChange((_evt, session) => {
+          const id = session?.user?.id ?? null;
+          setSessionUserId(id);
+          setProfileId(id);
+        });
+      }
+      if (cached) setReady(true); // we already know what to show — no spinner
+
+      // hydrateCore() only pulls the small reference data (school structure,
+      // people, permissions) — a dozen tables instead of all 33 — so first
+      // paint no longer waits on messages/attendance/fees/marks/etc. Those
+      // load lazily via ensureGroup() the moment a page that needs them
+      // mounts. Any lazy-group data left over from a previous cached
+      // session is preserved (stale-until-revalidated) rather than wiped.
+      const { db: core, mode: m, schemaMissing: missing } = await hydrateCore();
       if (!mounted) return;
-      const uid = data.session?.user?.id ?? null;
-      if (uid) { setSessionUserId(uid); setProfileId(uid); }
-    });
-    const { data: sub } = supabase.auth.onAuthStateChange((_evt, session) => {
-      const id = session?.user?.id ?? null;
-      setSessionUserId(id);
-      setProfileId(id);
-    });
-    return () => { mounted = false; sub.subscription.unsubscribe(); };
+      const merged = m === "live" ? mergeCoreIntoCached(core, cached) : core;
+      dbRef.current = merged;
+      setDb(merged);
+      setMode(m);
+      setSchemaMissing(missing);
+      setYearId(merged.years.find((y) => y.active)?.id ?? merged.years[0]?.id ?? "");
+      if (m === "live") saveCachedDb(merged); else clearCachedDb();
+      setReady(true);
+    })();
+    return () => { mounted = false; };
   }, []);
 
   /** Re-probe and re-hydrate — used by the setup console after migrations land. */
   const reconnect = async (): Promise<DbMode | "missing"> => {
-    const result = await queryClient.fetchQuery({ queryKey: coreQueryKey, queryFn: hydrateCore });
-    // Migrations may have just been applied, or the connection may have
-    // changed entirely — any previously-fetched group data could now be
-    // wrong, so drop it and let pages that need it re-fetch via ensureGroup.
-    queryClient.removeQueries({ queryKey: ["group"] });
-    if (result.mode !== "live") { setSessionUserId(null); setProfileId(null); }
-    return result.schemaMissing ? "missing" : result.mode;
+    loadedGroupsRef.current = new Set();
+    loadingGroupsRef.current = new Set();
+    const { db: loaded, mode: m, schemaMissing: missing } = await hydrateCore();
+    dbRef.current = loaded;
+    setDb(loaded);
+    setMode(m);
+    setSchemaMissing(missing);
+    setYearId(loaded.years.find((y) => y.active)?.id ?? loaded.years[0]?.id ?? "");
+    if (m !== "live") { setSessionUserId(null); setProfileId(null); }
+    return missing ? "missing" : m;
   };
 
   /** True once `group`'s tables have been fetched this session — always
    *  true outside live mode, since local/off already hold everything in
-   *  memory. */
-  const isGroupLoaded = (group: LazyGroup): boolean =>
-    mode !== "live" || groupQueries[ALL_LAZY_GROUPS.indexOf(group)].isSuccess;
+   *  memory. Depends on loadedGroupsTick so components re-render once a
+   *  fetch this hook kicked off actually lands. */
+  const isGroupLoaded = (group: LazyGroup): boolean => {
+    void loadedGroupsTick;
+    return modeRef.current !== "live" || loadedGroupsRef.current.has(group);
+  };
 
   /** Fetches one feature group's tables on demand. No-op outside live mode
-   *  (already fully in memory). Safe to call every render — fetchQuery
-   *  dedupes against an in-flight or already-cached request for the same
-   *  key, so it's a no-op once loaded or already in flight too. */
+   *  (already fully in memory) and no-op once loaded or already in flight,
+   *  so it's safe for every page to call unconditionally on mount. */
   const ensureGroup = (group: LazyGroup) => {
-    if (mode !== "live") return;
-    queryClient
-      .fetchQuery({ queryKey: groupQueryKey(group), queryFn: () => hydrateGroup(group, dbRef.current) })
-      .catch((e) => console.warn(`[store] failed to load ${group}:`, e));
+    if (modeRef.current !== "live") return;
+    if (loadedGroupsRef.current.has(group) || loadingGroupsRef.current.has(group)) return;
+    loadingGroupsRef.current.add(group);
+    hydrateGroup(group, dbRef.current)
+      .then((partial) => {
+        const merged: DB = { ...dbRef.current, ...partial };
+        dbRef.current = merged;
+        setDb(merged);
+        saveCachedDb(merged);
+      })
+      .catch((e) => console.warn(`[store] failed to load ${group}:`, e))
+      .finally(() => {
+        loadingGroupsRef.current.delete(group);
+        loadedGroupsRef.current.add(group);
+        setLoadedGroupsTick((t) => t + 1);
+      });
   };
 
   const currentUser = useMemo(() => {
@@ -484,30 +463,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, sessionUserId, db]);
 
-  /** Writes an optimistic draft straight into the query cache — the core
-   *  entry and any already-loaded group entries the draft touched — so
-   *  every reader (this provider's `db` memo, and thus every page) updates
-   *  immediately, the same way the old setDb(draft) did. Un-loaded groups
-   *  are left alone; there's nothing sensible to optimistically patch in a
-   *  group nobody has fetched yet. */
-  const writeOptimistic = (draft: DB) => {
-    queryClient.setQueryData(coreQueryKey, (old: Awaited<ReturnType<typeof hydrateCore>> | undefined) =>
-      old ? { ...old, db: { ...old.db, ...pick(draft, CORE_FIELDS) } } : old
-    );
-    for (const group of ALL_LAZY_GROUPS) {
-      queryClient.setQueryData(groupQueryKey(group), (old: Partial<DB> | undefined) =>
-        old ? { ...old, ...pick(draft, GROUP_FIELDS[group]) } : old
-      );
-    }
-  };
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
 
   const update = (fn: (d: DB) => void): Promise<string[]> => {
     const prev = dbRef.current;
     const draft = structuredClone(prev);
     fn(draft);
     dbRef.current = draft;
-    writeOptimistic(draft);
-    if (mode !== "live") return Promise.resolve([]);
+    setDb(draft);
+    if (modeRef.current !== "live") return Promise.resolve([]);
     return sync(prev, draft).then(async (errors) => {
       if (errors.length) {
         // The optimistic draft may not match what actually landed on the
@@ -518,14 +483,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // session — one with a placeholder id that was never swapped for
         // a real one — which then breaks unrelated features later (e.g. a
         // notification recipient list built from that ghost user).
-        await queryClient.refetchQueries({ queryKey: coreQueryKey });
-        // Only re-pull groups that were actually loaded — an unloaded group
-        // has nothing stale to correct, and forcing it in now would just
-        // turn a cheap recovery into an unrelated full-table fetch.
-        await queryClient.refetchQueries({
-          queryKey: ["group"],
-          predicate: (q) => q.state.data !== undefined,
-        });
+        const { db: loaded } = await hydrate();
+        dbRef.current = loaded;
+        setDb(loaded);
+        // hydrate() (unlike hydrateCore()) pulls every table, so everything
+        // is now genuinely fresh — mark every lazy group loaded rather than
+        // let an already-mounted page's ensureGroup() immediately refetch
+        // and briefly stomp this recovered state with a slower request.
+        loadedGroupsRef.current = new Set(ALL_LAZY_GROUPS);
+        setLoadedGroupsTick((t) => t + 1);
       }
       return errors;
     }); // PostgreSQL; RLS decides what lands
@@ -549,7 +515,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setProfileId(id);
     const profile = await loadProfileForSession(id);
     if (profile) {
-      if (profile.status !== "active") { await supabase.auth.signOut().catch(() => {}); setSessionUserId(null); setProfileId(null); return { ok: false, error: "This account has been disabled. Contact the administrator." }; }
+      if (profile.status !== "active") { await supabase.auth.signOut(); setSessionUserId(null); setProfileId(null); return { ok: false, error: "This account has been disabled. Contact the administrator." }; }
       update((d) => { d.users = [...d.users.filter((u) => u.id !== profile.id), profile]; });
       return { ok: true, user: profile };
     }
@@ -557,18 +523,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   const logout = () => {
-    // Only ask Supabase to invalidate a session if one could actually exist
-    // (live mode). In local/off mode there's no Supabase session to begin
-    // with, so calling signOut() unconditionally — as this used to do —
-    // hits /auth/v1/logout with no valid token and logs a 403 on every
-    // logout in demo mode. .catch swallows the remaining case (a token that
-    // expired or was already invalidated server-side) — Supabase still
-    // clears its local auth state regardless of whether the server call
-    // succeeds, so there's nothing to recover from.
-    if (mode === "live") supabase?.auth.signOut().catch(() => {});
+    supabase?.auth.signOut();
     setSessionUserId(null);
     setProfileId(null);
-    clearPersistedCache();
+    clearCachedDb();
   };
 
   const toast = (msg: string, tone: "ok" | "warn" = "ok") => setToastState({ id: Date.now(), msg, tone });
@@ -577,7 +535,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const resetData = () => {
     if (mode !== "live") {
       const fresh = buildSeed();
-      queryClient.setQueryData(coreQueryKey, { db: fresh, mode: "local" as DbMode, schemaMissing: false });
+      dbRef.current = fresh;
+      setDb(fresh);
       setYearId(fresh.years.find((y) => y.active)?.id ?? fresh.years[0].id);
       toast("Demo data has been reset.");
       return;

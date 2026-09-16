@@ -31,82 +31,20 @@ const sb = () => supabase;
 export type DbMode = "live" | "local" | "off";
 
 /**
- * Every network call below goes through this. Supabase calls can hang
- * indefinitely rather than reject — a browser extension silently dropping
- * the request, a paused/unreachable project with no fast failure, or a
- * stuck auth lock (see the comment in lib/supabase.ts) — and none of that
- * surfaces as a rejected promise on its own. Without a hard ceiling here, a
- * single stuck request means `await`-ing code never resumes, `hydrateCore`
- * never settles, and the app is stuck on the boot spinner forever with no
- * way to recover short of the user giving up and closing the tab.
- * Wrapping every call in a timeout guarantees boot always reaches a
- * decision (live / local / off) within a bounded time.
+ * Probe the remote schema without writing anything. Distinguishes:
+ *   live    — tables exist (data may be empty)
+ *   missing — reachable project, migrations not applied (PGRST205 / 42P01)
+ *   off     — client not configured
  */
-const NETWORK_TIMEOUT_MS = 15_000;
-// students/profiles gate whether hydrateCore treats the whole boot as live
-// or falls all the way back to demo (see the check right after they're
-// fetched, below). A real RLS-relationship query — can_view_student() does
-// a couple of joins per row — is legitimately heavier than the plain
-// `using (true)` reference tables, so it gets more rope before we give up
-// on it and throw away a boot that was otherwise working fine.
-const IDENTITY_TIMEOUT_MS = 25_000;
-// The schema probe gets extra headroom: a free-tier Supabase project that's
-// been idle auto-pauses and can take several seconds to spin back up on the
-// very first request. 10s was sometimes not enough for that cold start
-// alone, which was tipping a perfectly fine, fully-migrated project into
-// the "missing" fallback below.
-const SCHEMA_PROBE_TIMEOUT_MS = 20_000;
-
-class BackendTimeoutError extends Error {
-  constructor(label: string, ms: number) {
-    super(`${label} did not respond within ${ms}ms`);
-    this.name = "BackendTimeoutError";
-  }
-}
-
-function withTimeout<T>(promise: PromiseLike<T>, label: string, ms = NETWORK_TIMEOUT_MS): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new BackendTimeoutError(label, ms)), ms);
-    Promise.resolve(promise).then(
-      (v) => { clearTimeout(timer); resolve(v); },
-      (e) => { clearTimeout(timer); reject(e); },
-    );
-  });
-}
-
-/**
- * Probe the remote schema without writing anything. Three-way result:
- *   live        — tables exist (data may be empty)
- *   missing     — reachable project, CONFIRMED no migrations applied
- *                 (PGRST205 / 42P01 / "does not exist"). Only this shows
- *                 the "connect the live database / apply migrations" setup
- *                 wizard — it should never fire for a project that's
- *                 actually fine.
- *   unreachable — couldn't get a clean answer either way (timeout, a
- *                 transient network error, a permission error unrelated to
- *                 the schema, a cold-starting project that didn't respond
- *                 in time…). Falls back to the same offline demo seed as
- *                 "missing" so the UI never hangs, but WITHOUT showing the
- *                 migrations wizard — telling someone to re-run migrations
- *                 they already ran, because of an unrelated hiccup, is
- *                 actively misleading.
- *   off         — client not configured
- */
-export async function checkSchema(): Promise<DbMode | "missing" | "unreachable"> {
+export async function checkSchema(): Promise<DbMode | "missing"> {
   if (!isSupabaseConfigured) return "off";
-  try {
-    const { error } = await withTimeout(sb()!.from("schools").select("id").limit(1), "schema probe", SCHEMA_PROBE_TIMEOUT_MS);
-    if (!error) return "live";
-    const code = (error as { code?: string }).code ?? "";
-    const msg = error.message ?? "";
-    if (code === "PGRST205" || code === "42P01" || /does not exist|Could not find the table/i.test(msg)) return "missing";
-    console.warn("[backend] schema probe returned an unexpected error — treating as a connection issue, not a missing schema:", msg);
-    return "unreachable";
-  } catch (e) {
-    const detail = e instanceof BackendTimeoutError ? e.message : String((e as Error)?.message ?? e);
-    console.warn("[backend] schema probe did not complete in time — treating as a connection issue, not a missing schema:", detail);
-    return "unreachable";
-  }
+  const { error } = await sb()!.from("schools").select("id").limit(1);
+  if (!error) return "live";
+  const code = (error as { code?: string }).code ?? "";
+  const msg = error.message ?? "";
+  if (code === "PGRST205" || code === "42P01" || /does not exist|Could not find the table/i.test(msg)) return "missing";
+  console.warn("[backend] schema probe failed:", msg);
+  return "missing";
 }
 
 /**
@@ -160,20 +98,14 @@ export async function applyMigrations(
    matters more than speed.
    ========================================================================= */
 
-async function sel<T = any>(table: string, select = "*", timeoutMs = NETWORK_TIMEOUT_MS): Promise<T[] | null> {
+async function sel<T = any>(table: string, select = "*"): Promise<T[] | null> {
   if (!isSupabaseConfigured) return null;
-  try {
-    const { data, error } = await withTimeout(sb()!.from(table).select(select), `select ${table}`, timeoutMs);
-    if (error) {
-      console.warn(`[backend] could not read ${table}:`, error.message);
-      return null;
-    }
-    return (data as T[]) ?? [];
-  } catch (e) {
-    const detail = e instanceof BackendTimeoutError ? e.message : String((e as Error)?.message ?? e);
-    console.warn(`[backend] could not read ${table}:`, detail);
+  const { data, error } = await sb()!.from(table).select(select);
+  if (error) {
+    console.warn(`[backend] could not read ${table}:`, error.message);
     return null;
   }
+  return (data as T[]) ?? [];
 }
 
 export type LazyGroup =
@@ -287,23 +219,8 @@ function mapReports(reports: any[]): MessageReport[] {
  */
 export async function hydrateCore(): Promise<{ db: DB; mode: DbMode; schemaMissing: boolean }> {
   const seed = buildSeed();
-
-  // Wait for the Supabase Auth client to finish restoring/refreshing its
-  // session before firing a single data request. Without this, the probe
-  // and the 14 selects below can race an in-flight token restore/refresh:
-  // some requests go out before it settles (stale/expired token → treated
-  // as anonymous or rejected by PostgREST), some go out after (the real,
-  // correctly-scoped token) — so different tables in the SAME boot end up
-  // answered under different identities. That's exactly what produces
-  // "sometimes shows all students, sometimes one, sometimes just the demo
-  // seed" on reload: it's not random, it's a stale/fresh-token split race.
-  // getSession() resolves only once any pending refresh is done, and every
-  // request below shares that one settled outcome.
-  if (isSupabaseConfigured) await sb()!.auth.getSession().catch(() => {});
-
   const probe = await checkSchema();
   if (probe === "off") return { db: seed, mode: "off", schemaMissing: false };
-  if (probe === "unreachable") return { db: seed, mode: "local", schemaMissing: false };
   if (probe === "missing") return { db: seed, mode: "local", schemaMissing: true };
 
   const [
@@ -313,23 +230,9 @@ export async function hydrateCore(): Promise<{ db: DB; mode: DbMode; schemaMissi
   ] = await Promise.all([
     sel("schools"), sel("academic_years"), sel("terms"), sel("classes"), sel("sections"),
     sel("subjects"), sel("teachers"), sel("teacher_assignments"),
-    sel("students", "*", IDENTITY_TIMEOUT_MS), sel("enrollments"), sel("student_documents"),
-    sel("role_defs"), sel("role_permissions"), sel("profiles", "*", IDENTITY_TIMEOUT_MS), sel("guardian_students"),
+    sel("students"), sel("enrollments"), sel("student_documents"),
+    sel("role_defs"), sel("role_permissions"), sel("profiles"), sel("guardian_students"),
   ]);
-
-  // Identity-scoped tables (who am I, which students can I see) are the
-  // ones that go wrong under the exact race described above. `null` here
-  // means the request actually failed/timed out — not "0 rows because RLS
-  // legitimately has nothing to show me" (that comes back as `[]`, which
-  // is fine and expected e.g. for a brand-new account). If either failed,
-  // refuse to merge: presenting real school-structure data (years, classes,
-  // subjects) next to leftover seed placeholder people is a worse, more
-  // confusing state than a clean, clearly-labelled full demo fallback.
-  // reconnect() (the "Re-check & connect" button) retries the whole thing.
-  if (students === null || profiles === null) {
-    console.warn("[backend] core identity data (students/profiles) failed to load — falling back to the offline demo seed instead of merging a partial result.");
-    return { db: seed, mode: "local", schemaMissing: false };
-  }
 
   const db: DB = seed;
   let remote = false;
