@@ -4,7 +4,22 @@ import type {
 } from "./types";
 import { buildSeed } from "./data/seed";
 import { supabase, isSupabaseConfigured, usernameToEmail } from "./lib/supabase";
-import { hydrate, hydrateData, sync, setProfileId, loadProfileForSession, type DbMode, type DataKey } from "./lib/backend";
+import {
+  hydrate, hydrateCore, hydrateGroup, ALL_LAZY_GROUPS, sync, setProfileId, loadProfileForSession,
+  type DbMode, type LazyGroup,
+} from "./lib/backend";
+import { loadCachedDb, saveCachedDb, clearCachedDb } from "./lib/dbCache";
+
+/** The small reference data hydrateCore() loads eagerly — used to merge a
+ *  fresh core hydrate into whatever lazy-group data an old cache still has,
+ *  instead of the fresh (core-only) snapshot blowing that away. */
+const CORE_FIELDS = ["settings", "years", "terms", "classes", "subjects", "teachers", "assignments", "students", "roles", "users"] as const;
+function mergeCoreIntoCached(freshCore: DB, cachedDb: DB | null): DB {
+  if (!cachedDb) return freshCore;
+  const merged: DB = { ...cachedDb };
+  for (const f of CORE_FIELDS) (merged as any)[f] = (freshCore as any)[f];
+  return merged;
+}
 
 export const uid = () => crypto.randomUUID();
 
@@ -310,93 +325,86 @@ interface Ctx {
   mode: DbMode;
   /** True when the project is reachable but the migrations haven't been applied yet. */
   schemaMissing: boolean;
-  /** Load a feature domain on demand. */
-  ensureData: (keys: DataKey[]) => Promise<void>;
   /** Re-probe the database and re-hydrate (after migrations are applied). */
   reconnect: () => Promise<DbMode | "missing">;
+  /** True once this feature's tables have been fetched this session (or the
+   *  app isn't in live mode, where everything is already in memory). Pages
+   *  can use this to show a loading state instead of trusting an empty
+   *  array as "no records". */
+  isGroupLoaded: (group: LazyGroup) => boolean;
+  /** Fetches one feature's tables on demand, once per session, the first
+   *  time a page that needs them mounts. Safe to call every render — it's a
+   *  no-op once loaded or while already in flight. */
+  ensureGroup: (group: LazyGroup) => void;
 }
 
 const AppCtx = createContext<Ctx | null>(null);
 
 export function AppProvider({ children }: { children: ReactNode }) {
-  const [db, setDb] = useState<DB>(() => buildSeed());
-  const [ready, setReady] = useState(false);
-  const [mode, setMode] = useState<DbMode>(isSupabaseConfigured ? "live" : "off");
+  const cached = useMemo(() => (isSupabaseConfigured ? loadCachedDb() : null), []);
+  const [db, setDb] = useState<DB>(() => cached ?? buildSeed());
+  // A cache hit means we can paint immediately — the real fetch still runs
+  // in the background and silently replaces this the moment it lands.
+  const [ready, setReady] = useState(!!cached);
+  const [mode, setMode] = useState<DbMode>(cached ? "live" : "off");
   const [schemaMissing, setSchemaMissing] = useState(false);
   const [sessionUserId, setSessionUserId] = useState<string | null>(null);
-  const [yearId, setYearId] = useState("");
+  const [yearId, setYearId] = useState(() => cached ? (cached.years.find((y) => y.active)?.id ?? cached.years[0]?.id ?? "") : "");
   const [toastState, setToastState] = useState<Toast | null>(null);
   const dbRef = useRef(db);
+  // Which feature groups this session has actually fetched — tracked with
+  // both a ref (so ensureGroup can check synchronously and never double-fire
+  // for two components that mount in the same tick) and state (so isGroupLoaded
+  // reads trigger a re-render once a fetch lands).
+  const loadedGroupsRef = useRef<Set<LazyGroup>>(new Set());
+  const loadingGroupsRef = useRef<Set<LazyGroup>>(new Set());
+  const [loadedGroupsTick, setLoadedGroupsTick] = useState(0);
 
-  const loadedKeys = useRef(new Set<string>());
-  const loadingKeys = useRef(new Map<string, Promise<void>>());
-
-  const roleBootKeys = (role: string): DataKey[] => {
-    const common: DataKey[] = ["school", "years", "terms", "classes", "subjects", "roles"];
-    if (role === "admin") return [...common, "teachers", "students", "structures", "attendance", "timetable"];
-    if (role === "teacher") return [...common, "teachers", "assignments", "students", "homework", "timetable"];
-    if (role === "student") return [...common, "students", "assignments", "teachers", "homework", "timetable"];
-    return [...common, "students", "assignments", "teachers", "homework", "timetable", "fees"];
-  };
-
-  const ensureData = async (keys: DataKey[]) => {
-    if (!isSupabaseConfigured || !supabase || modeRef.current !== "live") return;
-    const wanted = [...new Set(keys)].filter((k) => !loadedKeys.current.has(k));
-    if (!wanted.length) return;
-    const pending = wanted.map((k) => loadingKeys.current.get(k)).filter(Boolean) as Promise<void>[];
-    if (pending.length) await Promise.all(pending);
-    const stillNeeded = wanted.filter((k) => !loadedKeys.current.has(k) && !loadingKeys.current.has(k));
-    if (!stillNeeded.length) return;
-    const token = (async () => {
-      const { db: loaded, mode: m, schemaMissing: missing } = await hydrateData(stillNeeded, dbRef.current);
-      if (m === "live") {
-        dbRef.current = loaded;
-        setDb(loaded);
-        setMode(m);
-        setSchemaMissing(missing);
-        stillNeeded.forEach((k) => loadedKeys.current.add(k));
-      }
-    })();
-    stillNeeded.forEach((k) => loadingKeys.current.set(k, token));
-    try { await token; } finally { stillNeeded.forEach((k) => loadingKeys.current.delete(k)); }
-  };
-
-  /* Boot is intentionally small: session/profile first, then only the domains
-   * needed by that role's dashboard. Every other domain waits for navigation. */
+  /* Boot: check the session first (a local token read, not a network round
+   * trip in the common case) so — combined with a cache hit — we can paint
+   * the correct screen (dashboard or login) immediately. hydrate() then
+   * refreshes quietly in the background; no visible reconnect, the data
+   * just becomes current a moment later. */
   useEffect(() => {
     let mounted = true;
     (async () => {
-      if (!isSupabaseConfigured || !supabase) { setReady(true); return; }
-      const { data } = await supabase.auth.getSession();
-      const uid = data.session?.user?.id ?? null;
-      if (!uid) { setReady(true); return; }
-      setSessionUserId(uid); setProfileId(uid);
-      const profile = await loadProfileForSession(uid);
-      if (!mounted) return;
-      if (profile) {
-        dbRef.current = { ...dbRef.current, users: [profile] };
-        modeRef.current = "live";
-        setDb(dbRef.current);
-        setReady(true);
-        setMode("live");
-        await ensureData(roleBootKeys(profile.role));
-      } else {
-        setReady(true);
+      if (isSupabaseConfigured && supabase) {
+        const { data } = await supabase.auth.getSession();
+        const uid = data.session?.user?.id ?? null;
+        if (uid) { setSessionUserId(uid); setProfileId(uid); }
+        supabase.auth.onAuthStateChange((_evt, session) => {
+          const id = session?.user?.id ?? null;
+          setSessionUserId(id);
+          setProfileId(id);
+        });
       }
-      supabase.auth.onAuthStateChange((_evt, session) => {
-        const id = session?.user?.id ?? null;
-        setSessionUserId(id); setProfileId(id);
-      });
+      if (cached) setReady(true); // we already know what to show — no spinner
+
+      // hydrateCore() only pulls the small reference data (school structure,
+      // people, permissions) — a dozen tables instead of all 33 — so first
+      // paint no longer waits on messages/attendance/fees/marks/etc. Those
+      // load lazily via ensureGroup() the moment a page that needs them
+      // mounts. Any lazy-group data left over from a previous cached
+      // session is preserved (stale-until-revalidated) rather than wiped.
+      const { db: core, mode: m, schemaMissing: missing } = await hydrateCore();
+      if (!mounted) return;
+      const merged = m === "live" ? mergeCoreIntoCached(core, cached) : core;
+      dbRef.current = merged;
+      setDb(merged);
+      setMode(m);
+      setSchemaMissing(missing);
+      setYearId(merged.years.find((y) => y.active)?.id ?? merged.years[0]?.id ?? "");
+      if (m === "live") saveCachedDb(merged); else clearCachedDb();
+      setReady(true);
     })();
     return () => { mounted = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   /** Re-probe and re-hydrate — used by the setup console after migrations land. */
   const reconnect = async (): Promise<DbMode | "missing"> => {
-    loadedKeys.current.clear();
-    const { db: loaded, mode: m, schemaMissing: missing } = await hydrate();
-    loadedKeys.current = new Set(["school","years","terms","classes","subjects","teachers","assignments","students","structures","marks","submissions","grading","attendance","fees","homework","timetable","roles","users","announcements","messages","notifications","events","audit","reports"]);
+    loadedGroupsRef.current = new Set();
+    loadingGroupsRef.current = new Set();
+    const { db: loaded, mode: m, schemaMissing: missing } = await hydrateCore();
     dbRef.current = loaded;
     setDb(loaded);
     setMode(m);
@@ -404,6 +412,37 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setYearId(loaded.years.find((y) => y.active)?.id ?? loaded.years[0]?.id ?? "");
     if (m !== "live") { setSessionUserId(null); setProfileId(null); }
     return missing ? "missing" : m;
+  };
+
+  /** True once `group`'s tables have been fetched this session — always
+   *  true outside live mode, since local/off already hold everything in
+   *  memory. Depends on loadedGroupsTick so components re-render once a
+   *  fetch this hook kicked off actually lands. */
+  const isGroupLoaded = (group: LazyGroup): boolean => {
+    void loadedGroupsTick;
+    return modeRef.current !== "live" || loadedGroupsRef.current.has(group);
+  };
+
+  /** Fetches one feature group's tables on demand. No-op outside live mode
+   *  (already fully in memory) and no-op once loaded or already in flight,
+   *  so it's safe for every page to call unconditionally on mount. */
+  const ensureGroup = (group: LazyGroup) => {
+    if (modeRef.current !== "live") return;
+    if (loadedGroupsRef.current.has(group) || loadingGroupsRef.current.has(group)) return;
+    loadingGroupsRef.current.add(group);
+    hydrateGroup(group, dbRef.current)
+      .then((partial) => {
+        const merged: DB = { ...dbRef.current, ...partial };
+        dbRef.current = merged;
+        setDb(merged);
+        saveCachedDb(merged);
+      })
+      .catch((e) => console.warn(`[store] failed to load ${group}:`, e))
+      .finally(() => {
+        loadingGroupsRef.current.delete(group);
+        loadedGroupsRef.current.add(group);
+        setLoadedGroupsTick((t) => t + 1);
+      });
   };
 
   const currentUser = useMemo(() => {
@@ -447,6 +486,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const { db: loaded } = await hydrate();
         dbRef.current = loaded;
         setDb(loaded);
+        // hydrate() (unlike hydrateCore()) pulls every table, so everything
+        // is now genuinely fresh — mark every lazy group loaded rather than
+        // let an already-mounted page's ensureGroup() immediately refetch
+        // and briefly stomp this recovered state with a slower request.
+        loadedGroupsRef.current = new Set(ALL_LAZY_GROUPS);
+        setLoadedGroupsTick((t) => t + 1);
       }
       return errors;
     }); // PostgreSQL; RLS decides what lands
@@ -472,7 +517,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (profile) {
       if (profile.status !== "active") { await supabase.auth.signOut(); setSessionUserId(null); setProfileId(null); return { ok: false, error: "This account has been disabled. Contact the administrator." }; }
       update((d) => { d.users = [...d.users.filter((u) => u.id !== profile.id), profile]; });
-      await ensureData(roleBootKeys(profile.role));
       return { ok: true, user: profile };
     }
     return { ok: true };
@@ -480,14 +524,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const logout = () => {
     supabase?.auth.signOut();
-    loadedKeys.current.clear();
-    loadingKeys.current.clear();
-    const fresh = buildSeed();
-    dbRef.current = fresh;
-    setDb(fresh);
-    setYearId("");
     setSessionUserId(null);
     setProfileId(null);
+    clearCachedDb();
   };
 
   const toast = (msg: string, tone: "ok" | "warn" = "ok") => setToastState({ id: Date.now(), msg, tone });
@@ -510,7 +549,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     yearId, setYear: setYearId,
     sessionUserId, currentUser, login, logout,
     toast, ui: { toast: toastState }, dismissToast,
-    ready, mode, schemaMissing, ensureData, reconnect,
+    ready, mode, schemaMissing, reconnect,
+    isGroupLoaded, ensureGroup,
   };
 
   if (!ready) {
@@ -532,4 +572,21 @@ export function useApp() {
   const ctx = useContext(AppCtx);
   if (!ctx) throw new Error("useApp must be used inside AppProvider");
   return ctx;
+}
+
+/** Call at the top of any page that reads one or more lazy-loaded feature
+ *  groups (attendance, fees, homework, timetable, academics/marks,
+ *  announcements, messaging, notifications, events, audit, reports).
+ *  Triggers the fetch on mount (once per session; a no-op afterward) and
+ *  returns whether every requested group has landed, so the page can show
+ *  a loading state instead of reading an empty array as "no records". */
+export function useLazyGroups(groups: LazyGroup | LazyGroup[]): boolean {
+  const { isGroupLoaded, ensureGroup } = useApp();
+  const list = Array.isArray(groups) ? groups : [groups];
+  const key = list.join(",");
+  useEffect(() => {
+    for (const g of list) ensureGroup(g);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+  return list.every((g) => isGroupLoaded(g));
 }

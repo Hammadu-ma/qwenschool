@@ -10,10 +10,9 @@ import type {
  * Backend adapter — the single place where the in-memory `DB` shape meets the
  * real Supabase/PostgreSQL schema.
  *
- *  - hydrate()  : loads only the requested domains (or every collection when
- *                 called without arguments). Row Level Security on the server
- *                 decides what THIS user may see; the client never filters for
- *                 security, only for shape.
+ *  - hydrate()  : loads every collection through the anon client. Row Level
+ *                 Security on the server decides what THIS user may see; the
+ *                 client never filters for security, only for shape.
  *  - sync()     : diffs an old DB snapshot against a new one and applies the
  *                 delta (upsert / delete) to PostgreSQL. This lets the whole
  *                 app keep calling `update((d) => …)` unchanged.
@@ -87,6 +86,16 @@ export async function applyMigrations(
 
 /* =========================================================================
    hydrate — Supabase → DB shape
+
+   Boot no longer pulls every table up front. hydrateCore() loads only the
+   small reference data (school structure, people, permissions) every role
+   needs before anything can render — around a dozen tables instead of all
+   33. Feature-specific data (messages, attendance, fees, homework, marks,
+   announcements, notifications, events, audit) is loaded lazily by
+   hydrateGroup() the first time a page that needs it actually mounts, via
+   ensureGroup() in store.tsx. The full hydrate() below still exists for the
+   rare full-resync path (recovering from a failed write) where correctness
+   matters more than speed.
    ========================================================================= */
 
 async function sel<T = any>(table: string, select = "*"): Promise<T[] | null> {
@@ -99,53 +108,137 @@ async function sel<T = any>(table: string, select = "*"): Promise<T[] | null> {
   return (data as T[]) ?? [];
 }
 
-export type DataKey =
-  | "school" | "years" | "terms" | "classes" | "subjects" | "teachers" | "assignments"
-  | "students" | "structures" | "marks" | "submissions" | "grading" | "attendance"
-  | "fees" | "homework" | "timetable" | "roles" | "users" | "announcements"
-  | "messages" | "notifications" | "events" | "audit" | "reports";
+export type LazyGroup =
+  | "academics" | "attendance" | "fees" | "homework" | "timetable"
+  | "announcements" | "messaging" | "notifications" | "events" | "audit" | "reports";
 
-const DATA_TABLES: Record<DataKey, string[]> = {
-  school: ["schools"], years: ["academic_years"], terms: ["terms"], classes: ["classes", "sections"],
-  subjects: ["subjects"], teachers: ["teachers"], assignments: ["teacher_assignments"],
-  students: ["students", "enrollments", "student_documents"], structures: ["assessment_structures", "assessment_items"],
-  marks: ["assessment_marks"], submissions: ["mark_submissions"], grading: ["grade_bands"],
-  attendance: ["attendance_registers", "attendance_entries"], fees: ["fee_items"], homework: ["homework"],
-  timetable: ["timetable_entries"], roles: ["role_defs", "role_permissions"], users: ["profiles", "guardian_students"],
-  announcements: ["announcements", "announcement_reads"], messages: ["conversations", "conversation_participants", "messages"],
-  notifications: ["notifications"], events: ["events"], audit: ["audit_log"], reports: ["message_reports"],
-};
+export const ALL_LAZY_GROUPS: LazyGroup[] = [
+  "academics", "attendance", "fees", "homework", "timetable",
+  "announcements", "messaging", "notifications", "events", "audit", "reports",
+];
 
-export const tablesFor = (...keys: DataKey[]) => new Set(keys.flatMap((k) => DATA_TABLES[k]));
+/* ---- field mappers, shared by hydrateCore/hydrateGroup so the Supabase
+   row → DB shape logic lives in exactly one place each ---- */
 
-export async function hydrate(requested?: Set<string>, base?: DB): Promise<{ db: DB; mode: DbMode; schemaMissing: boolean }> {
+function mapStructures(structures: any[], items: any[], db: DB): AssessmentStructure[] {
+  return structures.map((st: any) => ({
+    id: st.id, yearId: st.year_id, classId: st.class_id, subjectId: st.subject_id, period: termName(db, st.term_id),
+    items: items.filter((i: any) => i.structure_id === st.id).sort((a: any, b: any) => a.sort - b.sort)
+      .map((i: any) => ({ id: i.id, name: i.name, max: Number(i.max_mark), weight: Number(i.weight) })),
+  })) as AssessmentStructure[];
+}
+function mapAssessmentMarks(marks: any[]): DB["assessmentMarks"] {
+  const am: DB["assessmentMarks"] = {};
+  for (const m of marks) {
+    am[m.structure_id] = am[m.structure_id] ?? {};
+    am[m.structure_id][m.student_id] = am[m.structure_id][m.student_id] ?? {};
+    am[m.structure_id][m.student_id][m.item_id] = Number(m.raw_mark);
+  }
+  return am;
+}
+function mapSubmissions(submissions: any[]) {
+  return submissions.map((s: any) => ({
+    id: s.id, structureId: s.structure_id, status: s.status,
+    submittedBy: s.submitted_by, submittedAt: s.submitted_at,
+    approvedBy: s.approved_by, approvedAt: s.approved_at,
+    returnedBy: s.returned_by, returnedAt: s.returned_at, returnReason: s.return_reason,
+    publishedBy: s.published_by, publishedAt: s.published_at, reopenReason: s.reopen_reason,
+  }));
+}
+function mapGrading(gradeBands: any[]) {
+  return gradeBands.slice().sort((a: any, b: any) => a.sort - b.sort)
+    .map((g: any) => ({ min: Number(g.min_pct), max: Number(g.max_pct), grade: g.grade, remark: g.remark }));
+}
+function mapAttendance(registers: any[], entries: any[]): AttendanceRecord[] {
+  return registers.map((r: any) => {
+    const marks: AttendanceRecord["marks"] = {};
+    for (const e of entries) if (e.register_id === r.id) marks[e.student_id] = e.status;
+    return { date: r.day, classId: r.class_id, sectionId: r.section_id, marks } as AttendanceRecord;
+  });
+}
+function mapFees(fees: any[]) {
+  return fees.map((f: any) => ({ id: f.id, studentId: f.student_id, label: f.label, amount: Number(f.amount), paid: Number(f.paid), due: f.due_date, payments: f.payments ?? [] }));
+}
+function mapHomework(homework: any[]) {
+  return homework.map((h: any) => ({ id: h.id, yearId: h.year_id, classId: h.class_id, sectionId: h.section_id, subjectId: h.subject_id, title: h.title, description: h.description, issued: h.issued, due: h.due, submitted: h.submitted_students ?? [] }));
+}
+function mapTimetable(timetable: any[]) {
+  return timetable.map((t: any) => ({ id: t.id, classId: t.class_id, sectionId: t.section_id, day: t.day, period: t.period, subjectId: t.subject_id, room: t.room }));
+}
+function mapAnnouncements(announcements: any[], reads: any[]): Announcement[] {
+  return announcements.map((a: any) => ({
+    id: a.id, title: a.title, body: a.body, category: a.category, senderId: a.sender_id,
+    audience: a.audience, status: a.status, createdAt: a.created_at, scheduledFor: a.scheduled_for,
+    publishedAt: a.published_at, pinned: a.pinned,
+    readBy: reads.filter((r: any) => r.announcement_id === a.id).map((r: any) => r.profile_id),
+  })) as Announcement[];
+}
+function mapConversations(conversations: any[], participants: any[]): Conversation[] {
+  return conversations.map((c: any) => ({
+    id: c.id, type: "direct" as const,
+    participants: participants.filter((p: any) => p.conversation_id === c.id).map((p: any) => p.profile_id),
+    relatedStudentId: c.related_student_id, relatedClassId: c.related_class_id,
+    relatedSectionId: c.related_section_id, relatedSubjectId: c.related_subject_id,
+    createdAt: c.created_at, updatedAt: c.updated_at, status: c.status,
+  })) as Conversation[];
+}
+function mapMessages(messages: any[]): Message[] {
+  return messages.map((m: any) => ({
+    id: m.id, conversationId: m.conversation_id, senderId: m.sender_id, body: m.body,
+    createdAt: m.created_at, readBy: m.read_by ?? [], status: (m.read_by?.length ?? 0) > 1 ? "read" : "sent",
+  })) as Message[];
+}
+function mapNotifications(notifications: any[]): AppNotification[] {
+  return notifications.map((n: any) => ({
+    id: n.id, userId: n.profile_id, type: n.type, title: n.title, body: n.body, at: n.created_at, read: n.is_read,
+  })) as AppNotification[];
+}
+function mapEvents(events: any[]): SchoolEvent[] {
+  return events.map((e: any) => ({
+    id: e.id, title: e.title, description: e.description, date: e.day, time: e.time_of_day,
+    location: e.location, category: e.category, audience: e.audience, createdBy: e.created_by,
+  })) as SchoolEvent[];
+}
+function mapAudit(audit: any[]): AuditEntry[] {
+  return audit.map((a: any) => ({
+    id: a.id, userId: a.actor_id, userName: a.actor_name, action: a.action, target: a.target, detail: a.detail, at: a.at,
+  })) as AuditEntry[];
+}
+function mapReports(reports: any[]): MessageReport[] {
+  return reports.map((r: any) => ({
+    id: r.id, messageId: r.message_id, conversationId: r.conversation_id, reporterId: r.reporter_id,
+    reason: r.reason, detail: r.detail, at: r.created_at, status: r.status,
+  })) as MessageReport[];
+}
+
+/**
+ * Loads only the small, always-needed reference data — school structure,
+ * people, permissions — every role needs before it can render a dashboard
+ * at all (~14 tables). Feature data stays empty here; hydrateGroup() fills
+ * it in on demand. This is the call on the critical path to first paint.
+ */
+export async function hydrateCore(): Promise<{ db: DB; mode: DbMode; schemaMissing: boolean }> {
   const seed = buildSeed();
   const probe = await checkSchema();
   if (probe === "off") return { db: seed, mode: "off", schemaMissing: false };
   if (probe === "missing") return { db: seed, mode: "local", schemaMissing: true };
 
-  // Parallel reads; any table that fails (e.g. migration not yet applied)
-  // falls back to the seed so the UI still renders — loudly, not silently.
   const [
     schools, years, terms, classes, sections, subjects, teachers, assignments,
-    students, enrollments, documents, structures, items, marks, submissions,
-    gradeBands, registers, entries, fees, homework, timetable,
+    students, enrollments, documents,
     roleDefs, rolePerms, profiles, guardianStudents,
-    announcements, announcementReads, conversations, participants,
-    messages, notifications, events, audit, reports,
   ] = await Promise.all([
-    ...["schools", "academic_years", "terms", "classes", "sections", "subjects", "teachers", "teacher_assignments",
-      "students", "enrollments", "student_documents", "assessment_structures", "assessment_items", "assessment_marks",
-      "mark_submissions", "grade_bands", "attendance_registers", "attendance_entries", "fee_items", "homework", "timetable_entries",
-      "role_defs", "role_permissions", "profiles", "guardian_students", "announcements", "announcement_reads", "conversations",
-      "conversation_participants", "messages", "notifications", "events", "audit_log", "message_reports"].map((t) => want.has(t) ? sel(t) : Promise.resolve(null)),
+    sel("schools"), sel("academic_years"), sel("terms"), sel("classes"), sel("sections"),
+    sel("subjects"), sel("teachers"), sel("teacher_assignments"),
+    sel("students"), sel("enrollments"), sel("student_documents"),
+    sel("role_defs"), sel("role_permissions"), sel("profiles"), sel("guardian_students"),
   ]);
 
-  const db: DB = base ? structuredClone(base) : seed;
-  const remote = [schools, years, terms, classes, sections, subjects, teachers, assignments, students, enrollments, documents, structures, items, marks, submissions, gradeBands, registers, entries, fees, homework, timetable, roleDefs, rolePerms, profiles, guardianStudents, announcements, announcementReads, conversations, participants, messages, notifications, events, audit, reports].some(Boolean);
-  const want = requested ?? new Set(Object.values(DATA_TABLES).flat());
+  const db: DB = seed;
+  let remote = false;
 
   if (schools) {
+    remote = true;
     const s = schools.find((x: any) => x.id === SCHOOL_ID);
     if (s) db.settings = { schoolName: s.name, motto: s.motto ?? "" };
   }
@@ -184,47 +277,6 @@ export async function hydrate(requested?: Set<string>, base?: DB): Promise<{ db:
     });
   }
 
-  if (structures && items) {
-    db.structures = structures.map((st: any) => ({
-      id: st.id, yearId: st.year_id, classId: st.class_id, subjectId: st.subject_id, period: termName(db, st.term_id),
-      items: items.filter((i: any) => i.structure_id === st.id).sort((a: any, b: any) => a.sort - b.sort)
-        .map((i: any) => ({ id: i.id, name: i.name, max: Number(i.max_mark), weight: Number(i.weight) })),
-    })) as AssessmentStructure[];
-  }
-
-  if (marks) {
-    const am: DB["assessmentMarks"] = {};
-    for (const m of marks as any[]) {
-      am[m.structure_id] = am[m.structure_id] ?? {};
-      am[m.structure_id][m.student_id] = am[m.structure_id][m.student_id] ?? {};
-      am[m.structure_id][m.student_id][m.item_id] = Number(m.raw_mark);
-    }
-    db.assessmentMarks = am;
-  }
-
-  if (submissions) db.submissions = (submissions as any[]).map((s) => ({
-    id: s.id, structureId: s.structure_id, status: s.status,
-    submittedBy: s.submitted_by, submittedAt: s.submitted_at,
-    approvedBy: s.approved_by, approvedAt: s.approved_at,
-    returnedBy: s.returned_by, returnedAt: s.returned_at, returnReason: s.return_reason,
-    publishedBy: s.published_by, publishedAt: s.published_at, reopenReason: s.reopen_reason,
-  }));
-
-  if (gradeBands) db.grading = (gradeBands as any[]).sort((a, b) => a.sort - b.sort)
-    .map((g) => ({ min: Number(g.min_pct), max: Number(g.max_pct), grade: g.grade, remark: g.remark }));
-
-  if (registers && entries) {
-    db.attendance = (registers as any[]).map((r) => {
-      const marks: AttendanceRecord["marks"] = {};
-      for (const e of entries as any[]) if (e.register_id === r.id) marks[e.student_id] = e.status;
-      return { date: r.day, classId: r.class_id, sectionId: r.section_id, marks } as AttendanceRecord;
-    });
-  }
-
-  if (fees) db.fees = (fees as any[]).map((f) => ({ id: f.id, studentId: f.student_id, label: f.label, amount: Number(f.amount), paid: Number(f.paid), due: f.due_date, payments: f.payments ?? [] }));
-  if (homework) db.homework = (homework as any[]).map((h) => ({ id: h.id, yearId: h.year_id, classId: h.class_id, sectionId: h.section_id, subjectId: h.subject_id, title: h.title, description: h.description, issued: h.issued, due: h.due, submitted: h.submitted_students ?? [] }));
-  if (timetable) db.timetable = (timetable as any[]).map((t) => ({ id: t.id, classId: t.class_id, sectionId: t.section_id, day: t.day, period: t.period, subjectId: t.subject_id, room: t.room }));
-
   if (roleDefs) {
     const perms = rolePerms ?? [];
     db.roles = (roleDefs as any[]).map((r) => ({
@@ -244,56 +296,103 @@ export async function hydrate(requested?: Set<string>, base?: DB): Promise<{ db:
     })) as User[];
   }
 
-  if (announcements) {
-    const reads = announcementReads ?? [];
-    db.announcements = (announcements as any[]).map((a) => ({
-      id: a.id, title: a.title, body: a.body, category: a.category, senderId: a.sender_id,
-      audience: a.audience, status: a.status, createdAt: a.created_at, scheduledFor: a.scheduled_for,
-      publishedAt: a.published_at, pinned: a.pinned,
-      readBy: (reads as any[]).filter((r) => r.announcement_id === a.id).map((r) => r.profile_id),
-    })) as Announcement[];
+  // In live mode, lazy-loaded fields start genuinely empty rather than the
+  // demo seed's placeholder content, so a page can tell "not fetched yet"
+  // apart from "no rows" and show a loading state instead of fake data
+  // until hydrateGroup() fills the field in.
+  if (remote) {
+    db.structures = []; db.assessmentMarks = {}; db.submissions = []; db.grading = [];
+    db.attendance = []; db.fees = []; db.homework = []; db.timetable = [];
+    db.announcements = []; db.conversations = []; db.messages = [];
+    db.notifications = []; db.events = []; db.audit = []; db.reports = [];
   }
-
-  if (conversations) {
-    const parts = participants ?? [];
-    db.conversations = (conversations as any[]).map((c) => ({
-      id: c.id, type: "direct" as const,
-      participants: (parts as any[]).filter((p) => p.conversation_id === c.id).map((p) => p.profile_id),
-      relatedStudentId: c.related_student_id, relatedClassId: c.related_class_id,
-      relatedSectionId: c.related_section_id, relatedSubjectId: c.related_subject_id,
-      createdAt: c.created_at, updatedAt: c.updated_at, status: c.status,
-    })) as Conversation[];
-  }
-
-  if (messages) db.messages = (messages as any[]).map((m) => ({
-    id: m.id, conversationId: m.conversation_id, senderId: m.sender_id, body: m.body,
-    createdAt: m.created_at, readBy: m.read_by ?? [], status: (m.read_by?.length ?? 0) > 1 ? "read" : "sent",
-  })) as Message[];
-
-  if (notifications) db.notifications = (notifications as any[]).map((n) => ({
-    id: n.id, userId: n.profile_id, type: n.type, title: n.title, body: n.body, at: n.created_at, read: n.is_read,
-  })) as AppNotification[];
-
-  if (events) db.events = (events as any[]).map((e) => ({
-    id: e.id, title: e.title, description: e.description, date: e.day, time: e.time_of_day,
-    location: e.location, category: e.category, audience: e.audience, createdBy: e.created_by,
-  })) as SchoolEvent[];
-
-  if (audit) db.audit = (audit as any[]).map((a) => ({
-    id: a.id, userId: a.actor_id, userName: a.actor_name, action: a.action, target: a.target, detail: a.detail, at: a.at,
-  })) as AuditEntry[];
-
-  if (reports) db.reports = (reports as any[]).map((r) => ({
-    id: r.id, messageId: r.message_id, conversationId: r.conversation_id, reporterId: r.reporter_id,
-    reason: r.reason, detail: r.detail, at: r.created_at, status: r.status,
-  })) as MessageReport[];
 
   return { db, mode: remote ? "live" : "local", schemaMissing: false };
 }
 
-/** Load only the requested domain(s), merging them into the existing client DB. */
-export async function hydrateData(keys: DataKey[], base: DB) {
-  return hydrate(tablesFor(...keys), base);
+/**
+ * Loads one feature's tables on demand — called the first time a page that
+ * needs them mounts (see ensureGroup() in store.tsx) — and returns just the
+ * DB fields that group owns, to be merged into the in-memory db. `base`
+ * supplies cross-references a mapper needs (e.g. db.terms for naming
+ * assessment periods); pass the current db.
+ */
+export async function hydrateGroup(group: LazyGroup, base: DB): Promise<Partial<DB>> {
+  if (!isSupabaseConfigured) return {};
+  switch (group) {
+    case "academics": {
+      const [structures, items, marks, submissions, gradeBands] = await Promise.all([
+        sel("assessment_structures"), sel("assessment_items"), sel("assessment_marks"),
+        sel("mark_submissions"), sel("grade_bands"),
+      ]);
+      const out: Partial<DB> = {};
+      if (structures && items) out.structures = mapStructures(structures, items, base);
+      if (marks) out.assessmentMarks = mapAssessmentMarks(marks);
+      if (submissions) out.submissions = mapSubmissions(submissions);
+      if (gradeBands) out.grading = mapGrading(gradeBands);
+      return out;
+    }
+    case "attendance": {
+      const [registers, entries] = await Promise.all([sel("attendance_registers"), sel("attendance_entries")]);
+      return registers && entries ? { attendance: mapAttendance(registers, entries) } : {};
+    }
+    case "fees": {
+      const fees = await sel("fee_items");
+      return fees ? { fees: mapFees(fees) } : {};
+    }
+    case "homework": {
+      const homework = await sel("homework");
+      return homework ? { homework: mapHomework(homework) } : {};
+    }
+    case "timetable": {
+      const timetable = await sel("timetable_entries");
+      return timetable ? { timetable: mapTimetable(timetable) } : {};
+    }
+    case "announcements": {
+      const [announcements, reads] = await Promise.all([sel("announcements"), sel("announcement_reads")]);
+      return announcements ? { announcements: mapAnnouncements(announcements, reads ?? []) } : {};
+    }
+    case "messaging": {
+      const [conversations, participants, messages] = await Promise.all([
+        sel("conversations"), sel("conversation_participants"), sel("messages"),
+      ]);
+      const out: Partial<DB> = {};
+      if (conversations && participants) out.conversations = mapConversations(conversations, participants);
+      if (messages) out.messages = mapMessages(messages);
+      return out;
+    }
+    case "notifications": {
+      const notifications = await sel("notifications");
+      return notifications ? { notifications: mapNotifications(notifications) } : {};
+    }
+    case "events": {
+      const events = await sel("events");
+      return events ? { events: mapEvents(events) } : {};
+    }
+    case "audit": {
+      const audit = await sel("audit_log");
+      return audit ? { audit: mapAudit(audit) } : {};
+    }
+    case "reports": {
+      const reports = await sel("message_reports");
+      return reports ? { reports: mapReports(reports) } : {};
+    }
+  }
+}
+
+/**
+ * Full resync — core plus every lazy group. Used only for the rare
+ * error-recovery path (a failed write re-pulls all state to stay correct),
+ * where correctness matters more than speed. Normal boot and page
+ * navigation use hydrateCore() + hydrateGroup() instead, which is what
+ * actually fixes first-load latency.
+ */
+export async function hydrate(): Promise<{ db: DB; mode: DbMode; schemaMissing: boolean }> {
+  const core = await hydrateCore();
+  if (core.mode !== "live") return core;
+  const groups = await Promise.all(ALL_LAZY_GROUPS.map((g) => hydrateGroup(g, core.db)));
+  for (const partial of groups) Object.assign(core.db, partial);
+  return core;
 }
 
 /* =========================================================================

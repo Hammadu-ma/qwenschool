@@ -3,7 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft, Bell, CalendarDays, Flag, Inbox, Lock, Megaphone, Paperclip, Search, Send, ShieldAlert, Users, Eye,
 } from "lucide-react";
-import { useApp, audienceLabel, audienceSize, describeSyncErrors, fmtShort, timeAgo, uid } from "../store";
+import { useApp, useLazyGroups, audienceLabel, audienceSize, describeSyncErrors, fmtShort, timeAgo, uid } from "../store";
 import {
   canCreateAnnouncement, canManageAnnouncement, canSeeAnnouncement, canSendMessage, canTargetAudience,
   canViewConversation, contactContext, contactGroups, conversationsFor, effectiveAnnouncementStatus,
@@ -75,6 +75,7 @@ function AudiencePicker({ value, onChange }: { value: Audience; onChange: (a: Au
 /* ================= Announcements ================= */
 export function AnnouncementsPage() {
   const { db, currentUser, update, toast } = useApp();
+  useLazyGroups("announcements");
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState("all");
   const canCreate = canCreateAnnouncement(db, currentUser);
@@ -220,6 +221,7 @@ function AnnouncementModal({ onClose, onSave }: { onClose: () => void; onSave: (
 /* ================= Messages (inbox + thread) ================= */
 export function MessagesPage() {
   const { db, currentUser, update, toast } = useApp();
+  useLazyGroups("messaging");
   const { id } = useParams();
   const nav = useNavigate();
   const [composeWith, setComposeWith] = useState<User | null>(null);
@@ -464,6 +466,7 @@ function ReportModal({ onClose, conv, messageId }: { onClose: () => void; conv: 
 /* ================= Notifications ================= */
 export function NotificationsPage() {
   const { db, currentUser, update } = useApp();
+  useLazyGroups("notifications");
   const list = userNotifications(db, currentUser);
   const ICON: Record<string, typeof Bell> = { announcement: Megaphone, message: Inbox, homework: Send, result: ShieldAlert, attendance: CalendarDays, event: CalendarDays, system: Bell };
   const markAll = () => update((d) => { d.notifications.forEach((n) => { if (n.userId === currentUser?.id) n.read = true; }); });
@@ -502,6 +505,7 @@ export function NotificationsPage() {
 /* ================= Events ================= */
 export function EventsPage() {
   const { db, currentUser, update, toast } = useApp();
+  useLazyGroups("events");
   const [open, setOpen] = useState(false);
   const canManage = hasPermission(db, currentUser, "events.manage");
   const visible = db.events
@@ -614,6 +618,7 @@ export function ContactsPage() {
 /* ================= Moderation (for communication.moderate) ================= */
 export function ModerationPage() {
   const { db, currentUser, update, toast } = useApp();
+  useLazyGroups(["messaging", "reports"]);
   if (!hasPermission(db, currentUser, "communication.moderate")) {
     return <AccessDenied required="communication.moderate" reason="Only authorized moderators can review reported communication." />;
   }

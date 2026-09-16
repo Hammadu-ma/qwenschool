@@ -7,7 +7,7 @@ import {
 import { DAYS, PERIODS } from "../data/seed";
 import {
   attendanceStats, childrenOf, fmtShort, getSubject, guardianOfStudent, sectionShort, shortName, studentAverage,
-  studentOf, studentResults, teacherPairs, teacherStudentIds, teachersOfStudent, timeAgo, todayISO, useApp,
+  studentOf, studentResults, teacherPairs, teacherStudentIds, teachersOfStudent, timeAgo, todayISO, useApp, useLazyGroups,
 } from "../store";
 import { visibleAnnouncements } from "../rbac";
 import { Avatar, Btn, Chip, Panel, Ring, RoleBadge, Stat } from "../ui";
@@ -36,6 +36,7 @@ function DayBanner({ title, kicker, chips, children }: { title: ReactNode; kicke
 
 function NoticeDigest() {
   const { db, currentUser } = useApp();
+  useLazyGroups("announcements");
   const nav = useNavigate();
   const notices = [...visibleAnnouncements(db, currentUser)]
     .sort((a, b) => Number(b.pinned ?? false) - Number(a.pinned ?? false) || (b.publishedAt ?? b.createdAt).localeCompare(a.publishedAt ?? a.createdAt))
@@ -70,6 +71,7 @@ function NoticeDigest() {
 /* ================================ ADMIN ================================ */
 export function AdminDashboard() {
   const { db, currentUser, yearId } = useApp();
+  useLazyGroups(["attendance", "academics", "timetable"]);
   const nav = useNavigate();
   const enrolled = db.students.filter((s) => s.enrollment?.yearId === yearId);
   const sections = db.classes.reduce((s, c) => s + c.sections.length, 0);
@@ -180,6 +182,7 @@ export function AdminDashboard() {
 /* ================================ TEACHER ================================ */
 export function TeacherDashboard() {
   const { db, currentUser, yearId } = useApp();
+  useLazyGroups(["timetable", "homework"]);
   const nav = useNavigate();
   const pairs = teacherPairs(db, currentUser);
   const myStudents = teacherStudentIds(db, currentUser);
@@ -293,6 +296,7 @@ export function TeacherDashboard() {
 /* ================================ STUDENT ================================ */
 export function StudentDashboard() {
   const { db, currentUser } = useApp();
+  useLazyGroups(["attendance", "academics", "timetable", "homework"]);
   const nav = useNavigate();
   const me = studentOf(db, currentUser);
   if (!me || !me.enrollment) {
@@ -436,6 +440,7 @@ export function StudentDashboard() {
 /* ================================ GUARDIAN ================================ */
 export function GuardianDashboard() {
   const { db, currentUser } = useApp();
+  useLazyGroups(["attendance", "academics", "fees", "homework"]);
   const nav = useNavigate();
   const kids = childrenOf(db, currentUser);
   const [childId, setChildId] = useState(kids[0]?.id ?? "");

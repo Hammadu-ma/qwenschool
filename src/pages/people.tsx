@@ -9,7 +9,7 @@ import {
   assessmentCalc, attendanceStats, canSeeStudent, childrenOf, describeSyncErrors, feeStats, fmtDate, fullName, getClass, getSection,
   getSubject, gradeFor, guardianOfStudent, homePathFor, ordinal, sectionLabel, sectionShort, shortName,
   studentAverage, studentOf, studentResults, structureRanks, teacherPairs, teacherStudentIds, teachersOfStudent,
-  todayISO, uid, useApp,
+  todayISO, uid, useApp, useLazyGroups,
 } from "../store";
 import {
   Avatar, Btn, Chip, EmptyState, Field, Modal, PageHead, Panel, Ring, RoleBadge, Select, Tabs, TextInput,
@@ -22,6 +22,7 @@ import { IDCardModal, RegistrationWizard } from "./registration";
 /* ================= students directory (role-scoped) ================= */
 export function StudentsPage({ scoped }: { scoped?: boolean }) {
   const { db, currentUser, yearId, update, toast } = useApp();
+  useLazyGroups("attendance");
   const nav = useNavigate();
   const [q, setQ] = useState("");
   const [cls, setCls] = useState("");
@@ -267,6 +268,7 @@ function RegisterStudentModal({ onClose, onSaved }: { onClose: () => void; onSav
 /* ================= student profile (entity-guarded) ================= */
 export function StudentProfilePage() {
   const { db, currentUser } = useApp();
+  useLazyGroups(["attendance", "academics", "homework", "fees"]);
   const { id } = useParams();
   const [tab, setTab] = useState("overview");
   const [editOpen, setEditOpen] = useState(false);
@@ -1137,6 +1139,7 @@ export function UsersPage() {
 /* ================= profile (any role) ================= */
 export function ProfilePage() {
   const { db, currentUser, update, toast, logout } = useApp();
+  useLazyGroups("academics");
   const nav = useNavigate();
   const [pw, setPw] = useState({ current: "", next: "", confirm: "" });
   if (!currentUser) return null;

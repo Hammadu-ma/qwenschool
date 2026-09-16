@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { History, KeyRound, Plus, ShieldCheck, Trash2, Users as UsersIcon, X, Eye } from "lucide-react";
-import { useApp, fmtDate, timeAgo, uid } from "../store";
+import { useApp, useLazyGroups, fmtDate, timeAgo, uid } from "../store";
 import {
   PERMISSION_CATALOG, PERMISSION_CATEGORIES, getRoleProfile, hasPermission, pushAudit,
 } from "../rbac";
@@ -221,6 +221,7 @@ function RoleModal({ draft, canEditPerms, onClose, onSave, setDraft }: {
 /* ================= Audit log ================= */
 export function AuditPage() {
   const { db, currentUser } = useApp();
+  useLazyGroups("audit");
   const [q, setQ] = useState("");
   if (!hasPermission(db, currentUser, "audit.view")) {
     return <AccessDenied required="audit.view" reason="You don't have permission to view the audit trail." />;

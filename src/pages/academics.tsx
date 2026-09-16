@@ -14,7 +14,7 @@ import {
   getSubject, getTeacher, getYear, gradeFor, ordinal, sectionLabel, sectionShort, shortName,
   structureRanks, structureWeightSum, studentAverage, studentOf, studentResults, studentsOf,
   submissionFor, submissionStatus, teacherFor, teacherPairs, teacherStudentIds,
-  todayISO, uid, useApp,
+  todayISO, uid, useApp, useLazyGroups,
 } from "../store";
 import { hasPermission, isSuperAdmin, pushAudit, pushNotifications } from "../rbac";
 import { downloadCsv, drawThemedHeader, drawThemedSectionLabel, drawThemedTable, newThemedDoc } from "../lib/exportKit";
@@ -92,6 +92,7 @@ function exportMarkSheetPdf(db: DB, structure: AssessmentStructure, roster: Stud
 /* ================= mark entry (admin full / teacher scoped) ================= */
 export function MarkEntryPage() {
   const { db, currentUser, yearId, setYear, update, toast } = useApp();
+  useLazyGroups("academics");
   const role = currentUser?.role ?? "admin";
   const isAdmin = role === "admin";
   const pairs = teacherPairs(db, currentUser);
@@ -594,6 +595,7 @@ function StructureModal({ existing, onClose }: { existing?: AssessmentStructure;
 /* ================= academic years & terms (admin/superadmin, gated by academics.manage_years) ================= */
 export function AcademicYearsPage() {
   const { db, currentUser, update, toast } = useApp();
+  useLazyGroups(["academics", "homework"]);
   const canManage = hasPermission(db, currentUser, "academics.manage_years");
   const [editYear, setEditYear] = useState<AcademicYear | "new" | null>(null);
   const [editTerm, setEditTerm] = useState<{ yearId: string; term: Term | "new" } | null>(null);
@@ -795,6 +797,7 @@ function TermModal({ yearId, existing, onClose }: { yearId: string; existing: Te
 /* ================= classes & subjects ================= */
 export function ClassesPage({ scoped }: { scoped?: boolean } = {}) {
   const { db, currentUser, update, toast } = useApp();
+  useLazyGroups(["academics", "timetable"]);
   const role = currentUser?.role ?? "admin";
   const canManage = !scoped && hasPermission(db, currentUser, "academics.manage");
   const [tab, setTab] = useState<"classes" | "subjects">("classes");
@@ -1048,6 +1051,7 @@ function SubjectModal({ existing, onClose }: { existing?: Subject; onClose: () =
    ========================================================================= */
 export function TimetablePage() {
   const { db, currentUser } = useApp();
+  useLazyGroups("timetable");
   if (!hasPermission(db, currentUser, "academics.view")) {
     return <AccessDenied required="academics.view" reason="You don't have permission to view the timetable." />;
   }
@@ -1178,6 +1182,7 @@ function TimetableCellModal({ day, period, classId, sectionId, existing, availab
    ========================================================================= */
 export function AttendancePage() {
   const { db, currentUser, update, toast } = useApp();
+  useLazyGroups("attendance");
   const role = currentUser?.role ?? "admin";
 
   if (role === "student" || role === "guardian") {
@@ -1475,6 +1480,7 @@ function AssignmentModal({ existing, onClose }: { existing?: Assignment; onClose
    ========================================================================= */
 export function ReportsPage() {
   const { db, currentUser } = useApp();
+  useLazyGroups("academics");
   const role = currentUser?.role ?? "admin";
 
   if (role === "student" || role === "guardian") {
@@ -1530,6 +1536,7 @@ export function ReportsPage() {
 /** Student/guardian: only ever see PUBLISHED results. */
 function ReportCardViewer() {
   const { db, currentUser } = useApp();
+  useLazyGroups("academics");
   const role = currentUser?.role;
   const kids = role === "guardian" ? childrenOf(db, currentUser) : (studentOf(db, currentUser) ? [studentOf(db, currentUser)!] : []);
   const [selId, setSelId] = useState(kids[0]?.id ?? "");
@@ -1677,6 +1684,7 @@ function ReportCardBody({ student, publishedOnly }: { student: Student; publishe
    ========================================================================= */
 export function FeesPage() {
   const { db, currentUser } = useApp();
+  useLazyGroups("fees");
   if (!hasPermission(db, currentUser, "fees.view")) {
     return <AccessDenied required="fees.view" reason="You don't have permission to view fee records." />;
   }
@@ -1918,6 +1926,7 @@ function FeeLedgerModal({ student, canManage, onClose }: { student: Student; can
    ========================================================================= */
 export function HomeworkPage() {
   const { db, currentUser } = useApp();
+  useLazyGroups("homework");
   const role = currentUser?.role ?? "admin";
 
   if (role === "student") return <StudentHomework />;
