@@ -3,7 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft, Bell, CalendarDays, Flag, Inbox, Lock, Megaphone, Paperclip, Search, Send, ShieldAlert, Users, Eye,
 } from "lucide-react";
-import { useApp, audienceLabel, audienceSize, fmtShort, timeAgo, uid } from "../store";
+import { useApp, audienceLabel, audienceSize, describeSyncErrors, fmtShort, timeAgo, uid } from "../store";
 import {
   canCreateAnnouncement, canManageAnnouncement, canSeeAnnouncement, canSendMessage, canTargetAudience,
   canViewConversation, contactContext, contactGroups, conversationsFor, effectiveAnnouncementStatus,
@@ -255,33 +255,36 @@ export function MessagesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active?.id, messages.length]);
 
-  const openDirect = (target: User) => {
+  const openDirect = async (target: User) => {
     if (!currentUser) return;
     const gate = canSendMessage(db, currentUser, target);
     if (!gate.ok) { toast(gate.reason ?? "Not permitted.", "warn"); return; }
     const existing = findDirectConversation(db, currentUser.id, target.id);
     if (existing) { nav(`/messages/${existing.id}`); return; }
     const cid = uid();
-    update((d) => {
+    const errors = await update((d) => {
       d.conversations.unshift({ id: cid, type: "direct", participants: [currentUser.id, target.id], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), status: "active" });
       pushAudit(d, currentUser, "conversation.open", target.name);
     });
+    if (errors.length) { toast(describeSyncErrors(errors), "warn"); return; }
     nav(`/messages/${cid}`);
   };
 
-  const send = () => {
+  const send = async () => {
     if (!active || !currentUser || !draft.trim()) return;
     const other = active.participants.find((p) => p !== currentUser.id);
     const target = db.users.find((u) => u.id === other);
     const gate = canSendMessage(db, currentUser, target ?? null);
     if (!gate.ok) { toast(gate.reason ?? "Not permitted.", "warn"); return; }
-    update((d) => {
-      d.messages.push({ id: uid(), conversationId: active.id, senderId: currentUser.id, body: draft.trim(), createdAt: new Date().toISOString(), readBy: [currentUser.id], status: "sent" });
+    const body = draft.trim();
+    setDraft("");
+    const errors = await update((d) => {
+      d.messages.push({ id: uid(), conversationId: active.id, senderId: currentUser.id, body, createdAt: new Date().toISOString(), readBy: [currentUser.id], status: "sent" });
       const c = d.conversations.find((x) => x.id === active.id);
       if (c) c.updatedAt = new Date().toISOString();
-      if (other) pushNotifications(d, [other], "message", `${currentUser.name} sent you a message`, draft.trim().slice(0, 90));
+      if (other) pushNotifications(d, [other], "message", `${currentUser.name} sent you a message`, body.slice(0, 90));
     });
-    setDraft("");
+    if (errors.length) { toast(describeSyncErrors(errors), "warn"); setDraft(body); }
   };
 
   const other = active ? db.users.find((u) => u.id === active.participants.find((p) => p !== currentUser?.id)) : undefined;
@@ -434,13 +437,18 @@ function ReportModal({ onClose, conv, messageId }: { onClose: () => void; conv: 
   const { currentUser, update, toast } = useApp();
   const [reason, setReason] = useState("Inappropriate content");
   const [detail, setDetail] = useState("");
+  const submit = async () => {
+    const errors = await update((d) => {
+      d.reports.unshift({ id: uid(), messageId, conversationId: conv.id, reporterId: currentUser?.id ?? "", reason, detail: detail.trim() || undefined, at: new Date().toISOString(), status: "open" });
+      pushAudit(d, currentUser, "message.report", reason);
+    });
+    if (errors.length) { toast(describeSyncErrors(errors), "warn"); return; }
+    toast("Report submitted to moderators.");
+    onClose();
+  };
   return (
     <Modal title="Report message" kicker="Goes to authorized moderators" onClose={onClose}
-      footer={<><Btn variant="ghost" onClick={onClose}>Cancel</Btn><Btn variant="danger" onClick={() => {
-        update((d) => { d.reports.unshift({ id: uid(), messageId, conversationId: conv.id, reporterId: currentUser?.id ?? "", reason, detail: detail.trim() || undefined, at: new Date().toISOString(), status: "open" }); pushAudit(d, currentUser, "message.report", reason); });
-        toast("Report submitted to moderators.");
-        onClose();
-      }}><Flag className="h-4 w-4" /> Submit report</Btn></>}>
+      footer={<><Btn variant="ghost" onClick={onClose}>Cancel</Btn><Btn variant="danger" onClick={submit}><Flag className="h-4 w-4" /> Submit report</Btn></>}>
       <Field label="Reason" required>
         <Select value={reason} onChange={(e) => setReason(e.target.value)}>
           {["Inappropriate content", "Harassment", "Spam", "Other"].map((r) => <option key={r}>{r}</option>)}

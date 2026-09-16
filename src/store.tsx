@@ -7,7 +7,7 @@ import { supabase, isSupabaseConfigured, usernameToEmail } from "./lib/supabase"
 import { hydrate, sync, setProfileId, loadProfileForSession, type DbMode } from "./lib/backend";
 import { loadCachedDb, saveCachedDb, clearCachedDb } from "./lib/dbCache";
 
-export const uid = () => Math.random().toString(36).slice(2, 10);
+export const uid = () => crypto.randomUUID();
 
 /** Turns update()'s raw sync-error list into one clear sentence. Login-account
  *  failures (tagged "login for X: …" in backend.ts) are common and recoverable

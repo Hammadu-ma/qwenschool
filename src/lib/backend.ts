@@ -3,7 +3,7 @@ import { PROJECT_REF } from "./migrations";
 import { buildSeed } from "../data/seed";
 import type {
   DB, User, Student, Enrollment, StudentDoc, AssessmentStructure, AssessmentItem, AttendanceRecord,
-  Announcement, Conversation, Message, AppNotification, SchoolEvent, AuditEntry, RoleDef,
+  Announcement, Conversation, Message, MessageReport, AppNotification, SchoolEvent, AuditEntry, RoleDef,
 } from "../types";
 
 /**
@@ -112,7 +112,7 @@ export async function hydrate(): Promise<{ db: DB; mode: DbMode; schemaMissing: 
     gradeBands, registers, entries, fees, homework, timetable,
     roleDefs, rolePerms, profiles, guardianStudents,
     announcements, announcementReads, conversations, participants,
-    messages, notifications, events, audit,
+    messages, notifications, events, audit, reports,
   ] = await Promise.all([
     sel("schools"), sel("academic_years"), sel("terms"), sel("classes"), sel("sections"),
     sel("subjects"), sel("teachers"), sel("teacher_assignments"),
@@ -123,7 +123,7 @@ export async function hydrate(): Promise<{ db: DB; mode: DbMode; schemaMissing: 
     sel("role_defs"), sel("role_permissions"), sel("profiles"), sel("guardian_students"),
     sel("announcements"), sel("announcement_reads"), sel("conversations"),
     sel("conversation_participants"), sel("messages"), sel("notifications"),
-    sel("events"), sel("audit_log"),
+    sel("events"), sel("audit_log"), sel("message_reports"),
   ]);
 
   const db: DB = seed;
@@ -267,6 +267,11 @@ export async function hydrate(): Promise<{ db: DB; mode: DbMode; schemaMissing: 
   if (audit) db.audit = (audit as any[]).map((a) => ({
     id: a.id, userId: a.actor_id, userName: a.actor_name, action: a.action, target: a.target, detail: a.detail, at: a.at,
   })) as AuditEntry[];
+
+  if (reports) db.reports = (reports as any[]).map((r) => ({
+    id: r.id, messageId: r.message_id, conversationId: r.conversation_id, reporterId: r.reporter_id,
+    reason: r.reason, detail: r.detail, at: r.created_at, status: r.status,
+  })) as MessageReport[];
 
   return { db, mode: remote ? "live" : "local", schemaMissing: false };
 }
@@ -462,6 +467,7 @@ async function doSync(oldDB: DB, newDB: DB, errors: string[]): Promise<void> {
   await syncParticipants(oldDB, newDB, errors);
   await syncMessages(oldDB, newDB, errors);
   await syncNotifications(oldDB, newDB, errors);
+  await syncReports(oldDB, newDB, errors);
   await syncProfiles(oldDB, newDB, errors);
 }
 
@@ -503,10 +509,28 @@ async function syncMessages(oldDB: DB, newDB: DB, errors: string[]) {
 }
 
 async function syncNotifications(oldDB: DB, newDB: DB, errors: string[]) {
+  // notifications has no direct insert policy by design — it's written only
+  // via notify_users(), a SECURITY DEFINER RPC that enforces who's allowed
+  // to notify whom (admins can notify anyone; everyone else only people
+  // they're actually allowed to message). A raw upsert here would always be
+  // rejected by RLS regardless of payload, so call the RPC instead, once per
+  // new local notification.
   const { up } = diff(oldDB.notifications, newDB.notifications);
-  for (const nnt of up) {
-    await upsert("notifications", [{ id: nnt.id, profile_id: nnt.userId, type: nnt.type, title: nnt.title, body: nnt.body, is_read: nnt.read, created_at: nnt.at }], undefined, errors);
+  for (const n of up) {
+    const { error } = await sb()!.rpc("notify_users", { p_ids: [n.userId], p_type: n.type, p_title: n.title, p_body: n.body });
+    if (error) errors.push(`notifications: ${error.message}`);
   }
+}
+
+// Append-only log of message reports for moderators — entries are only ever
+// added, never edited, so a plain diff-by-id upsert is all that's needed.
+// (audit_log is intentionally NOT synced this way: it has no insert policy
+// at all — it's written only by trusted SECURITY DEFINER functions like
+// create_user_account, so the client can never write to it directly. The
+// in-app Audit log page's own history stays session-local by design.)
+async function syncReports(oldDB: DB, newDB: DB, errors: string[]) {
+  const { up } = diff(oldDB.reports, newDB.reports);
+  if (up.length) await upsert("message_reports", up.map((r) => ({ id: r.id, message_id: r.messageId, conversation_id: r.conversationId, reporter_id: r.reporterId, reason: r.reason, detail: r.detail, status: r.status, created_at: r.at })), undefined, errors);
 }
 
 /**

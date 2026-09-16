@@ -27,7 +27,7 @@ export type { PermissionDef } from "./permissions";
    grants a capability. This module is the single place both are combined.
    ========================================================================= */
 
-const rid = () => Math.random().toString(36).slice(2, 10);
+const rid = () => crypto.randomUUID(); // notifications.id / audit_log.id are uuid columns — must be a real UUID
 const nowIso = () => new Date().toISOString();
 
 /** Map a base role to its default role-profile id (used when creating users). */
