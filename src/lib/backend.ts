@@ -42,7 +42,14 @@ export type DbMode = "live" | "local" | "off";
  * Wrapping every call in a timeout guarantees boot always reaches a
  * decision (live / local / off) within a bounded time.
  */
-const NETWORK_TIMEOUT_MS = 10_000;
+const NETWORK_TIMEOUT_MS = 15_000;
+// students/profiles gate whether hydrateCore treats the whole boot as live
+// or falls all the way back to demo (see the check right after they're
+// fetched, below). A real RLS-relationship query — can_view_student() does
+// a couple of joins per row — is legitimately heavier than the plain
+// `using (true)` reference tables, so it gets more rope before we give up
+// on it and throw away a boot that was otherwise working fine.
+const IDENTITY_TIMEOUT_MS = 25_000;
 // The schema probe gets extra headroom: a free-tier Supabase project that's
 // been idle auto-pauses and can take several seconds to spin back up on the
 // very first request. 10s was sometimes not enough for that cold start
@@ -153,10 +160,10 @@ export async function applyMigrations(
    matters more than speed.
    ========================================================================= */
 
-async function sel<T = any>(table: string, select = "*"): Promise<T[] | null> {
+async function sel<T = any>(table: string, select = "*", timeoutMs = NETWORK_TIMEOUT_MS): Promise<T[] | null> {
   if (!isSupabaseConfigured) return null;
   try {
-    const { data, error } = await withTimeout(sb()!.from(table).select(select), `select ${table}`);
+    const { data, error } = await withTimeout(sb()!.from(table).select(select), `select ${table}`, timeoutMs);
     if (error) {
       console.warn(`[backend] could not read ${table}:`, error.message);
       return null;
@@ -306,8 +313,8 @@ export async function hydrateCore(): Promise<{ db: DB; mode: DbMode; schemaMissi
   ] = await Promise.all([
     sel("schools"), sel("academic_years"), sel("terms"), sel("classes"), sel("sections"),
     sel("subjects"), sel("teachers"), sel("teacher_assignments"),
-    sel("students"), sel("enrollments"), sel("student_documents"),
-    sel("role_defs"), sel("role_permissions"), sel("profiles"), sel("guardian_students"),
+    sel("students", "*", IDENTITY_TIMEOUT_MS), sel("enrollments"), sel("student_documents"),
+    sel("role_defs"), sel("role_permissions"), sel("profiles", "*", IDENTITY_TIMEOUT_MS), sel("guardian_students"),
   ]);
 
   // Identity-scoped tables (who am I, which students can I see) are the
