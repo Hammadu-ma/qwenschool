@@ -226,29 +226,27 @@ function mapReports(reports: any[]): MessageReport[] {
  * people, permissions — every role needs before it can render a dashboard
  * at all (~14 tables). Feature data stays empty here; hydrateGroup() fills
  * it in on demand. This is the call on the critical path to first paint.
+ *
+ * Two data paths, same output shape:
+ *  - Fast path: a single `get_app_bootstrap()` RPC (see migration
+ *    0012_fast_bootstrap.sql) that returns every core table in one round
+ *    trip instead of 14. This is tried first.
+ *  - Fallback path: the original per-table `sel()` fan-out, used if the RPC
+ *    errors (e.g. a project that hasn't run 0012 yet) or returns something
+ *    that doesn't parse the way we expect. Correctness always wins over
+ *    speed here — a failed fast path silently costs a moment, never data.
  */
-export async function hydrateCore(): Promise<{ db: DB; mode: DbMode; schemaMissing: boolean; transientError: boolean }> {
-  const seed = buildSeed();
-  const probe = await checkSchema();
-  if (probe === "off") return { db: seed, mode: "off", schemaMissing: false, transientError: false };
-  if (probe === "missing") return { db: seed, mode: "local", schemaMissing: true, transientError: false };
-  // Probe itself failed (network blip, timeout, transient 5xx) — this is not
-  // "schema missing" or "not configured". Caller keeps whatever it already
-  // had (cached live data, current session) instead of swapping in the fake
-  // seed and dropping the user's session.
-  if (probe === "error") return { db: seed, mode: "off", schemaMissing: false, transientError: true };
+type CoreRows = {
+  schools: any[] | null; years: any[] | null; terms: any[] | null; classes: any[] | null; sections: any[] | null;
+  subjects: any[] | null; teachers: any[] | null; assignments: any[] | null;
+  students: any[] | null; enrollments: any[] | null; documents: any[] | null;
+  roleDefs: any[] | null; rolePerms: any[] | null; profiles: any[] | null; guardianStudents: any[] | null;
+};
 
-  const [
-    schools, years, terms, classes, sections, subjects, teachers, assignments,
-    students, enrollments, documents,
-    roleDefs, rolePerms, profiles, guardianStudents,
-  ] = await Promise.all([
-    sel("schools"), sel("academic_years"), sel("terms"), sel("classes"), sel("sections"),
-    sel("subjects"), sel("teachers"), sel("teacher_assignments"),
-    sel("students"), sel("enrollments"), sel("student_documents"),
-    sel("role_defs"), sel("role_permissions"), sel("profiles"), sel("guardian_students"),
-  ]);
-
+/** Maps raw core rows (same shape regardless of which path fetched them)
+ *  onto `seed`, in place, and returns whether we actually got live data. */
+function applyCoreRows(seed: DB, rows: CoreRows): { db: DB; remote: boolean } {
+  const { schools, years, terms, classes, sections, subjects, teachers, assignments, students, enrollments, documents, roleDefs, rolePerms, profiles, guardianStudents } = rows;
   const db: DB = seed;
   let remote = false;
 
@@ -311,6 +309,72 @@ export async function hydrateCore(): Promise<{ db: DB; mode: DbMode; schemaMissi
     })) as User[];
   }
 
+  return { db, remote };
+}
+
+/** Fast path: one `get_app_bootstrap()` RPC (+ the one small table it
+ *  doesn't carry, student_documents, fetched alongside it) instead of 14
+ *  separate requests. `null` means "couldn't use it, fall back". */
+async function hydrateCoreViaBootstrap(seed: DB): Promise<{ db: DB; remote: boolean } | null> {
+  try {
+    const [{ data, error }, documents] = await Promise.all([
+      sb()!.rpc("get_app_bootstrap"),
+      sel<any>("student_documents"),
+    ]);
+    if (error || !data || !Array.isArray(data.schools)) return null;
+    return applyCoreRows(seed, {
+      schools: data.schools, years: data.academic_years, terms: data.terms,
+      classes: data.classes, sections: data.sections, subjects: data.subjects,
+      teachers: data.teachers, assignments: data.teacher_assignments,
+      students: data.students, enrollments: data.enrollments, documents: documents ?? [],
+      roleDefs: data.role_defs, rolePerms: data.role_permissions,
+      profiles: data.profiles, guardianStudents: data.guardian_students,
+    });
+  } catch (e) {
+    console.warn("[backend] get_app_bootstrap RPC unavailable, falling back to per-table fetch:", e);
+    return null;
+  }
+}
+
+/** Slow-but-proven path: one request per core table, run in parallel. */
+async function hydrateCoreViaTables(seed: DB): Promise<{ db: DB; remote: boolean }> {
+  const [
+    schools, years, terms, classes, sections, subjects, teachers, assignments,
+    students, enrollments, documents,
+    roleDefs, rolePerms, profiles, guardianStudents,
+  ] = await Promise.all([
+    sel("schools"), sel("academic_years"), sel("terms"), sel("classes"), sel("sections"),
+    sel("subjects"), sel("teachers"), sel("teacher_assignments"),
+    sel("students"), sel("enrollments"), sel("student_documents"),
+    sel("role_defs"), sel("role_permissions"), sel("profiles"), sel("guardian_students"),
+  ]);
+  return applyCoreRows(seed, { schools, years, terms, classes, sections, subjects, teachers, assignments, students, enrollments, documents, roleDefs, rolePerms, profiles, guardianStudents });
+}
+
+/** Once a hydrateCore() in this tab has genuinely confirmed the schema is
+ *  live, skip re-probing it (`checkSchema()`) on every subsequent call —
+ *  e.g. right after login, or a page-triggered reconnect. The probe is only
+ *  there to tell "not configured" / "migrations not applied" / "live" apart
+ *  on the very first load; once we know it's live this tab, asking again is
+ *  a pure extra round trip on the critical path. If live data genuinely
+ *  stops coming back, the fetch itself reports transientError and this
+ *  flag is cleared so the next call re-probes properly. */
+let knownLive = false;
+
+export async function hydrateCore(): Promise<{ db: DB; mode: DbMode; schemaMissing: boolean; transientError: boolean }> {
+  const seed = buildSeed();
+  const probe = knownLive ? "live" : await checkSchema();
+  if (probe === "off") { knownLive = false; return { db: seed, mode: "off", schemaMissing: false, transientError: false }; }
+  if (probe === "missing") { knownLive = false; return { db: seed, mode: "local", schemaMissing: true, transientError: false }; }
+  // Probe itself failed (network blip, timeout, transient 5xx) — this is not
+  // "schema missing" or "not configured". Caller keeps whatever it already
+  // had (cached live data, current session) instead of swapping in the fake
+  // seed and dropping the user's session.
+  if (probe === "error") return { db: seed, mode: "off", schemaMissing: false, transientError: true };
+
+  const boot = await hydrateCoreViaBootstrap(seed);
+  const { db, remote } = boot ?? await hydrateCoreViaTables(seed);
+
   // In live mode, lazy-loaded fields start genuinely empty rather than the
   // demo seed's placeholder content, so a page can tell "not fetched yet"
   // apart from "no rows" and show a loading state instead of fake data
@@ -325,7 +389,8 @@ export async function hydrateCore(): Promise<{ db: DB; mode: DbMode; schemaMissi
   // checkSchema() already confirmed the schema exists — if the `schools`
   // fetch here still came back null, that's a flaky individual request, not
   // "schema missing". Report it as transient rather than demoting to local.
-  if (!remote) return { db: seed, mode: "off", schemaMissing: false, transientError: true };
+  if (!remote) { knownLive = false; return { db: seed, mode: "off", schemaMissing: false, transientError: true }; }
+  knownLive = true;
   return { db, mode: "live", schemaMissing: false, transientError: false };
 }
 

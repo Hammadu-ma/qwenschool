@@ -520,10 +520,37 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const id = data.user.id;
     setSessionUserId(id);
     setProfileId(id);
-    const profile = await loadProfileForSession(id);
+
+    // Always re-hydrate from scratch for whoever just signed in — never
+    // reuse whatever was already in memory (a previous person's session on
+    // a shared browser, or the anonymous pre-login state). Also drop every
+    // lazy-loaded group so pages that already mounted before this sign-in
+    // (or belonged to a previous session) fetch that data fresh under the
+    // new account instead of showing stale/wrong-user content.
+    loadedGroupsRef.current = new Set();
+    loadingGroupsRef.current = new Set();
+    const { db: fresh, mode: m, schemaMissing: missing, transientError } = await hydrateCore();
+    if (!transientError) {
+      dbRef.current = fresh;
+      setDb(fresh);
+      setMode(m);
+      setSchemaMissing(missing);
+      setYearId(fresh.years.find((y) => y.active)?.id ?? fresh.years[0]?.id ?? "");
+    }
+    setLoadedGroupsTick((t) => t + 1);
+
+    let profile = getUser(dbRef.current, id);
+    if (!profile) profile = await loadProfileForSession(id);
     if (profile) {
       if (profile.status !== "active") { await supabase.auth.signOut(); setSessionUserId(null); setProfileId(null); return { ok: false, error: "This account has been disabled. Contact the administrator." }; }
-      update((d) => { d.users = [...d.users.filter((u) => u.id !== profile.id), profile]; });
+      // Belt-and-braces: the fresh hydrate above should already include this
+      // profile via RLS, but if it didn't for any reason, patch it in rather
+      // than leave currentUser unresolved right after a successful sign-in.
+      if (!getUser(dbRef.current, id)) {
+        const merged: DB = { ...dbRef.current, users: [...dbRef.current.users.filter((u) => u.id !== profile!.id), profile!] };
+        dbRef.current = merged;
+        setDb(merged);
+      }
       return { ok: true, user: profile };
     }
     return { ok: true };
@@ -533,6 +560,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     supabase?.auth.signOut();
     setSessionUserId(null);
     setProfileId(null);
+    // Wipe in-memory state along with the auth session — otherwise the next
+    // sign-in on this tab/device (possibly a different person) would still
+    // have the previous session's data sitting in `db` and in the
+    // loaded-groups cache until every page happened to re-trigger a fetch.
+    const blank = buildSeed();
+    dbRef.current = blank;
+    setDb(blank);
+    loadedGroupsRef.current = new Set();
+    loadingGroupsRef.current = new Set();
+    setLoadedGroupsTick((t) => t + 1);
   };
 
   const toast = (msg: string, tone: "ok" | "warn" = "ok") => setToastState({ id: Date.now(), msg, tone });
