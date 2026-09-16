@@ -467,12 +467,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   modeRef.current = mode;
 
   const update = (fn: (d: DB) => void): Promise<string[]> => {
+    // No offline/local write path: if Supabase isn't live, refuse rather than
+    // mutate in-memory state that would only look saved.
+    if (modeRef.current !== "live") return Promise.resolve(["Not connected to Supabase — nothing was saved."]);
     const prev = dbRef.current;
     const draft = structuredClone(prev);
     fn(draft);
     dbRef.current = draft;
     setDb(draft);
-    if (modeRef.current !== "live") return Promise.resolve([]);
     return sync(prev, draft).then(async (errors) => {
       if (errors.length) {
         // The optimistic draft may not match what actually landed on the
@@ -498,15 +500,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   const login = async (username: string, password: string): Promise<{ ok: boolean; error?: string; user?: User }> => {
-    /* Local demo mode (schema not yet applied / offline): authenticate against the
-       in-memory seed so the product stays fully usable while the DB is provisioned. */
+    // No offline/local auth path: sign-in always goes through Supabase Auth.
     if (mode !== "live" || !supabase) {
-      const u = db.users.find((x) => x.username.toLowerCase() === username.trim().toLowerCase());
-      if (!u) return { ok: false, error: "No account found with that username." };
-      if (u.password !== password) return { ok: false, error: "Incorrect password. Try again." };
-      if (u.status !== "active") return { ok: false, error: "This account has been disabled. Contact the administrator." };
-      setSessionUserId(u.id);
-      return { ok: true, user: u };
+      return { ok: false, error: "Not connected to Supabase yet — finish setup above, then try again." };
     }
     const { data, error } = await supabase.auth.signInWithPassword({ email: usernameToEmail(username), password });
     if (error || !data.user) return { ok: false, error: error?.message === "Invalid login credentials" ? "Incorrect username or password." : error?.message ?? "Sign-in failed." };
@@ -533,15 +529,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const dismissToast = () => setToastState(null);
 
   const resetData = () => {
-    if (mode !== "live") {
-      const fresh = buildSeed();
-      dbRef.current = fresh;
-      setDb(fresh);
-      setYearId(fresh.years.find((y) => y.active)?.id ?? fresh.years[0].id);
-      toast("Demo data has been reset.");
-      return;
-    }
-    toast("Data now lives in Supabase — use the SQL editor or bootstrap script to reseed.", "warn");
+    toast("Data lives in Supabase — use the SQL editor or bootstrap script to reseed.", "warn");
   };
 
   const value = {

@@ -1,19 +1,10 @@
 import { useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
-import { GraduationCap, Lock, LogIn, ShieldAlert, ShieldCheck, Eye, EyeOff, ArrowLeft, Loader2, Users, Baby, BookOpen, KeyRound, Database, TerminalSquare, CheckCircle2, XCircle, Copy, ExternalLink, RefreshCw, Zap } from "lucide-react";
+import { GraduationCap, Lock, LogIn, ShieldAlert, ShieldCheck, Eye, EyeOff, ArrowLeft, Loader2, Database, TerminalSquare, CheckCircle2, XCircle, Copy, ExternalLink, RefreshCw, Zap } from "lucide-react";
 import { homePathFor, useApp } from "../store";
-import { Btn, Chip, RoleBadge } from "../ui";
-import type { Role } from "../types";
+import { Btn, RoleBadge } from "../ui";
 import { applyMigrations } from "../lib/backend";
 import { MIGRATIONS, COMBINED_SQL, sqlEditorUrl, PROJECT_REF } from "../lib/migrations";
-
-const DEMO: { role: Role; label: string; name: string; username: string; password: string; icon: React.ReactNode; desc: string }[] = [
-  { role: "admin", label: "Super Admin", name: "Dr. Selam Bekele", username: "root", password: "root123", icon: <ShieldCheck className="h-4 w-4" />, desc: "Roles & permissions" },
-  { role: "admin", label: "Administrator", name: "Amara Tesfaye", username: "admin", password: "admin123", icon: <KeyRound className="h-4 w-4" />, desc: "Full system control" },
-  { role: "teacher", label: "Teacher", name: "Mr. Ahmed Yusuf", username: "ahmed", password: "teach123", icon: <BookOpen className="h-4 w-4" />, desc: "Assigned classes only" },
-  { role: "student", label: "Student", name: "Abebe Kebede", username: "abebe", password: "stud123", icon: <Users className="h-4 w-4" />, desc: "Own records only" },
-  { role: "guardian", label: "Guardian", name: "Kebede Tesema", username: "kebede", password: "fam123", icon: <Baby className="h-4 w-4" />, desc: "2 registered children" },
-];
 
 type StepState = "idle" | "run" | "ok" | "fail";
 
@@ -174,7 +165,7 @@ function SetupConsole({ onConnected }: { onConnected: () => void }) {
               {checking ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
               {checking ? "Checking…" : "Re-check & connect"}
             </Btn>
-            <span className="text-[10.5px] text-pine-400">Until connected, you're in local demo mode — sign-in still works below.</span>
+            <span className="text-[10.5px] text-pine-400">Sign-in is disabled until the schema is applied and this reconnects.</span>
           </div>
         </div>
       )}
@@ -266,7 +257,7 @@ export function LoginPage() {
           </div>
         </div>
 
-        <p className="relative text-[11px] text-pine-400">AY {db.years.find((y) => y.active)?.name} · {db.students.length} students · {db.teachers.length} teachers · local demo</p>
+        <p className="relative text-[11px] text-pine-400">AY {db.years.find((y) => y.active)?.name} · {db.students.length} students · {db.teachers.length} teachers</p>
       </div>
 
       {/* form panel */}
@@ -288,77 +279,48 @@ export function LoginPage() {
 
           {mode !== "live" && !connected && <div className="mt-5"><SetupConsole onConnected={() => setConnected(true)} /></div>}
 
-          <form key={shake} onSubmit={submit} className={`mt-6 space-y-4 ${shake ? "anim-shake" : ""}`}>
-            <div>
-              <label className="mb-1.5 block text-[11.5px] font-bold uppercase tracking-[0.08em] text-soft">Username</label>
-              <input
-                autoFocus
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                placeholder="e.g. admin"
-                autoComplete="username"
-                className="w-full rounded-lg border border-mist bg-card px-3.5 py-2.5 text-[14px] outline-none transition-all focus:border-pine-500 focus:ring-2 focus:ring-pine-500/20"
-              />
-            </div>
-            <div>
-              <label className="mb-1.5 block text-[11.5px] font-bold uppercase tracking-[0.08em] text-soft">Password</label>
-              <div className="relative">
+          <fieldset disabled={mode !== "live" && !connected} className="disabled:opacity-40">
+            <form key={shake} onSubmit={submit} className={`mt-6 space-y-4 ${shake ? "anim-shake" : ""}`}>
+              <div>
+                <label className="mb-1.5 block text-[11.5px] font-bold uppercase tracking-[0.08em] text-soft">Username</label>
                 <input
-                  type={showPw ? "text" : "password"}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="••••••••"
-                  autoComplete="current-password"
-                  className="w-full rounded-lg border border-mist bg-card px-3.5 py-2.5 pr-11 text-[14px] outline-none transition-all focus:border-pine-500 focus:ring-2 focus:ring-pine-500/20"
+                  autoFocus
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  placeholder="e.g. admin"
+                  autoComplete="username"
+                  className="w-full rounded-lg border border-mist bg-card px-3.5 py-2.5 text-[14px] outline-none transition-all focus:border-pine-500 focus:ring-2 focus:ring-pine-500/20"
                 />
-                <button type="button" onClick={() => setShowPw((v) => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 cursor-pointer text-soft transition-colors hover:text-ink" aria-label="Toggle password visibility">
-                  {showPw ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </button>
               </div>
-            </div>
-
-            {error && (
-              <div className="anim-rise flex items-center gap-2 rounded-lg border border-rust-200 bg-rust-100 px-3.5 py-2.5 text-[12.5px] font-semibold text-rust-700">
-                <ShieldAlert className="h-4 w-4 shrink-0" /> {error}
+              <div>
+                <label className="mb-1.5 block text-[11.5px] font-bold uppercase tracking-[0.08em] text-soft">Password</label>
+                <div className="relative">
+                  <input
+                    type={showPw ? "text" : "password"}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="••••••••"
+                    autoComplete="current-password"
+                    className="w-full rounded-lg border border-mist bg-card px-3.5 py-2.5 pr-11 text-[14px] outline-none transition-all focus:border-pine-500 focus:ring-2 focus:ring-pine-500/20"
+                  />
+                  <button type="button" onClick={() => setShowPw((v) => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 cursor-pointer text-soft transition-colors hover:text-ink" aria-label="Toggle password visibility">
+                    {showPw ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
               </div>
-            )}
 
-            <Btn type="submit" size="lg" className="w-full" disabled={busy}>
-              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <LogIn className="h-4 w-4" />}
-              {busy ? "Authenticating…" : "Sign in"}
-            </Btn>
-          </form>
+              {error && (
+                <div className="anim-rise flex items-center gap-2 rounded-lg border border-rust-200 bg-rust-100 px-3.5 py-2.5 text-[12.5px] font-semibold text-rust-700">
+                  <ShieldAlert className="h-4 w-4 shrink-0" /> {error}
+                </div>
+              )}
 
-          <div className="mt-8">
-            <div className="mb-3 flex items-center gap-3">
-              <span className="h-px flex-1 bg-mist" />
-              <span className="text-[10.5px] font-bold uppercase tracking-[0.16em] text-soft">Demo accounts — click to sign in</span>
-              <span className="h-px flex-1 bg-mist" />
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              {DEMO.map((d, i) => (
-                <button
-                  key={d.username}
-                  onClick={() => { setUsername(d.username); setPassword(d.password); doLogin(d.username, d.password); }}
-                  disabled={busy}
-                  className={`anim-rise group cursor-pointer rounded-xl border p-3 text-left transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md disabled:opacity-50 ${
-                    d.username === "root"
-                      ? "border-gold-400/70 bg-gold-100/50 hover:border-gold-500"
-                      : "border-mist bg-card hover:border-pine-400"
-                  }`}
-                  style={{ animationDelay: `${i * 80}ms` }}
-                >
-                  <span className="flex items-center justify-between">
-                    <span className={d.username === "root" ? "text-gold-600 transition-transform group-hover:scale-110" : "text-pine-700 transition-transform group-hover:scale-110"}>{d.icon}</span>
-                    {d.username === "root" ? <Chip tone="gold">Super Admin</Chip> : <RoleBadge role={d.role} />}
-                  </span>
-                  <span className="mt-2 block text-[12.5px] font-bold text-ink">{d.name}</span>
-                  <span className="block text-[10.5px] text-soft">{d.desc}</span>
-                  <span className="mt-1.5 block font-mono text-[10px] text-soft/70">{d.username} / {d.password}</span>
-                </button>
-              ))}
-            </div>
-          </div>
+              <Btn type="submit" size="lg" className="w-full" disabled={busy}>
+                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <LogIn className="h-4 w-4" />}
+                {busy ? "Authenticating…" : "Sign in"}
+              </Btn>
+            </form>
+          </fieldset>
 
           <p className="mt-6 flex items-center justify-center gap-1.5 text-center text-[11px] text-soft">
             <Lock className="h-3 w-3" /> Sessions persist across refreshes · disabled accounts are rejected at sign-in
