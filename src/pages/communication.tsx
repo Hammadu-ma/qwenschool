@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
-  ArrowLeft, Bell, CalendarDays, Flag, Inbox, Lock, Megaphone, Paperclip, Search, Send, ShieldAlert, Users, Eye,
+  ArrowLeft, Bell, CalendarDays, Check, CheckCheck, Flag, Inbox, Lock, Megaphone, Paperclip, Search, Send, ShieldAlert, Users, Eye,
 } from "lucide-react";
 import { useApp, useLazyGroups, audienceLabel, audienceSize, describeSyncErrors, fmtShort, timeAgo, uid } from "../store";
 import {
@@ -225,14 +225,27 @@ function AnnouncementModal({ onClose, onSave }: { onClose: () => void; onSave: (
 }
 
 /* ================= Messages (inbox + thread) ================= */
+/** "Today" / "Yesterday" / "14 March 2026" — Telegram-style date divider label. */
+function dateDividerLabel(day: string): string {
+  const d = new Date(day + "T00:00:00");
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const yest = new Date(today); yest.setDate(yest.getDate() - 1);
+  d.setHours(0, 0, 0, 0);
+  if (d.getTime() === today.getTime()) return "Today";
+  if (d.getTime() === yest.getTime()) return "Yesterday";
+  return d.toLocaleDateString("en-GB", { day: "numeric", month: "long", year: d.getFullYear() !== today.getFullYear() ? "numeric" : undefined });
+}
+const fmtClock = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
 export function MessagesPage() {
-  const { db, currentUser, update, toast } = useApp();
+  const { db, currentUser, update, toast, onlineUserIds } = useApp();
   const groupsLoaded = useLazyGroups("messaging");
   const { id } = useParams();
   const nav = useNavigate();
   const [composeWith, setComposeWith] = useState<User | null>(null);
   const [reportMsg, setReportMsg] = useState<{ conv: Conversation; messageId: string } | null>(null);
   const [draft, setDraft] = useState("");
+  const [inboxQuery, setInboxQuery] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const convs = conversationsFor(db, currentUser);
@@ -245,7 +258,8 @@ export function MessagesPage() {
 
   const messages = active ? db.messages.filter((m) => m.conversationId === active.id).sort((a, b) => a.createdAt.localeCompare(b.createdAt)) : [];
 
-  // Mark incoming messages read when the conversation is opened.
+  // Mark incoming messages read when the conversation is opened (also fires
+  // live as new messages stream in via realtime while it's already open).
   useEffect(() => {
     if (!active || !currentUser) return;
     const unread = db.messages.some((m) => m.conversationId === active.id && m.senderId !== currentUser.id && !m.readBy.includes(currentUser.id));
@@ -259,9 +273,18 @@ export function MessagesPage() {
         });
       });
     }
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active?.id, messages.length]);
+
+  // On phones, the open thread takes over the whole screen (see below) —
+  // lock the page underneath so it can't be scrolled behind it, Telegram-style.
+  useEffect(() => {
+    if (!active || !window.matchMedia("(max-width: 1023px)").matches) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = prev; };
+  }, [active?.id]);
 
   const openDirect = async (target: User) => {
     if (!currentUser) return;
@@ -297,6 +320,122 @@ export function MessagesPage() {
 
   const other = active ? db.users.find((u) => u.id === active.participants.find((p) => p !== currentUser?.id)) : undefined;
   const relatedStudent = active?.relatedStudentId ? db.students.find((s) => s.id === active.relatedStudentId) : undefined;
+  const otherOnline = other ? onlineUserIds.has(other.id) : false;
+
+  const filteredConvs = convs.filter((c) => {
+    if (!inboxQuery.trim()) return true;
+    const peer = db.users.find((u) => u.id === c.participants.find((p) => p !== currentUser?.id));
+    return (peer?.name ?? "").toLowerCase().includes(inboxQuery.trim().toLowerCase());
+  });
+
+  // Rows for the thread: date dividers inserted between days, and
+  // consecutive same-sender messages "grouped" (tighter spacing, name/avatar
+  // shown once) the way Telegram groups a quick back-to-back burst.
+  const threadRows: Array<{ kind: "date"; key: string; label: string } | { kind: "msg"; key: string; m: (typeof messages)[number]; grouped: boolean }> = [];
+  {
+    let lastDay = "";
+    let lastSender = "";
+    for (const m of messages) {
+      const day = m.createdAt.slice(0, 10);
+      if (day !== lastDay) {
+        threadRows.push({ kind: "date", key: `d-${day}`, label: dateDividerLabel(day) });
+        lastDay = day;
+        lastSender = "";
+      }
+      threadRows.push({ kind: "msg", key: m.id, m, grouped: m.senderId === lastSender });
+      lastSender = m.senderId;
+    }
+  }
+
+  const threadHeader = active && (
+    <div className="flex shrink-0 items-center gap-3 border-b border-mist bg-card/95 px-4 py-3 backdrop-blur-sm">
+      <button onClick={() => nav("/messages")} className="cursor-pointer rounded-full p-1.5 text-soft transition-colors hover:bg-paper lg:hidden" aria-label="Back to inbox">
+        <ArrowLeft className="h-4.5 w-4.5" />
+      </button>
+      <div className="relative shrink-0">
+        <UserAvatar name={other?.name ?? "?"} role={other?.role ?? "admin"} size={40} />
+        {otherOnline && <span className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-card bg-pine-500" />}
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="truncate font-display text-[15px] font-bold leading-tight text-ink">{other?.name}</p>
+        <p className={`truncate text-[11.5px] leading-tight ${otherOnline ? "font-semibold text-pine-600" : "text-soft"}`}>
+          {otherOnline ? "online" : (other && contactContext(db, currentUser, other))}
+          {relatedStudent && ` · about ${relatedStudent.firstName} ${relatedStudent.lastName}`}
+        </p>
+      </div>
+      {other && <RoleBadge role={other.role} full />}
+    </div>
+  );
+
+  const threadBody = (
+    <div ref={scrollRef} className="flex-1 overflow-y-auto bg-paper/50 px-3 py-4 sm:px-4">
+      {threadRows.map((row) =>
+        row.kind === "date" ? (
+          <div key={row.key} className="my-3 flex items-center justify-center first:mt-0">
+            <span className="rounded-full border border-mist bg-card/90 px-3 py-1 text-[10.5px] font-bold uppercase tracking-wide text-soft shadow-sm">{row.label}</span>
+          </div>
+        ) : (
+          (() => {
+            const m = row.m;
+            const mine = m.senderId === currentUser?.id;
+            const sender = db.users.find((u) => u.id === m.senderId);
+            return (
+              <div key={row.key} className={`group flex ${mine ? "justify-end" : "justify-start"} ${row.grouped ? "mt-0.5" : "mt-3"}`}>
+                <div
+                  className={`anim-bubble max-w-[82%] rounded-2xl border px-3.5 py-2 shadow-sm sm:max-w-[72%] ${
+                    mine ? `chat-tail-mine border-pine-800 bg-pine-800 text-pine-50 ${row.grouped ? "rounded-br-2xl" : ""}` : `chat-tail-theirs border-mist bg-card text-ink ${row.grouped ? "rounded-bl-2xl" : ""}`
+                  }`}
+                >
+                  {!mine && !row.grouped && <p className="mb-0.5 text-[10.5px] font-bold text-pine-700">{sender?.name}</p>}
+                  <p className="whitespace-pre-line text-[13.5px] leading-relaxed">{m.body}</p>
+                  <p className={`mt-1 flex items-center justify-end gap-1 text-[10px] tnum ${mine ? "text-pine-300" : "text-soft"}`}>
+                    {fmtClock(m.createdAt)}
+                    {mine && (m.status === "read" ? <CheckCheck className="h-3.5 w-3.5 text-gold-300" /> : <Check className="h-3.5 w-3.5 opacity-80" />)}
+                  </p>
+                </div>
+                {!mine && (
+                  <button onClick={() => active && setReportMsg({ conv: active, messageId: m.id })} title="Report message" className="ml-1.5 self-center rounded p-1 text-soft opacity-0 transition-opacity hover:bg-rust-100 hover:text-rust-600 group-hover:opacity-100">
+                    <Flag className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
+            );
+          })()
+        )
+      )}
+      {messages.length === 0 && <p className="pt-16 text-center text-[12.5px] text-soft">Say hello — messages stay private to this conversation.</p>}
+    </div>
+  );
+
+  const threadInput = active && (
+    <div className="shrink-0 border-t border-mist bg-card px-3 py-3 sm:px-4" style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}>
+      {canSendMessage(db, currentUser, other ?? null).ok ? (
+        <div className="flex items-end gap-2">
+          <button className="mb-1 hidden shrink-0 cursor-pointer rounded-full p-2 text-soft transition-colors hover:bg-paper hover:text-pine-700 sm:flex" title="Attach (coming soon)" disabled>
+            <Paperclip className="h-4.5 w-4.5" />
+          </button>
+          <TextArea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder="Message…"
+            className="!min-h-[42px] flex-1 !rounded-2xl !py-2.5"
+            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+          />
+          <Btn onClick={send} disabled={!draft.trim()} className="!rounded-full !p-0" size="md" style={{ width: 40, height: 40 }}>
+            <Send className="h-4 w-4" />
+          </Btn>
+        </div>
+      ) : (
+        <p className="flex items-center gap-2 text-[12.5px] text-soft"><Lock className="h-4 w-4 text-rust-500" /> {canSendMessage(db, currentUser, other ?? null).reason ?? "You can't message this person."}</p>
+      )}
+    </div>
+  );
+
+  const threadEmpty = !groupsLoaded ? (
+    <SkeletonPanel rows={5} />
+  ) : (
+    <EmptyState icon={<Inbox className="h-5 w-5" />} title="Select a conversation" body="Pick a conversation from the inbox, or start a new one with someone you're connected to." />
+  );
 
   return (
     <div className="mx-auto max-w-6xl">
@@ -304,27 +443,42 @@ export function MessagesPage() {
         <Btn variant="gold" onClick={() => setComposeWith(currentUser ?? null)}><Send className="h-4 w-4" /> New message</Btn>
       </PageHead>
 
-      <div className="grid gap-4 lg:grid-cols-[320px_1fr]">
-        {/* conversation list */}
-        <Panel className="anim-rise h-fit overflow-hidden">
-          <div className="border-b border-mist bg-paper/60 px-4 py-3 text-[11px] font-bold uppercase tracking-[0.12em] text-soft">Inbox</div>
-          <ul className="max-h-[560px] divide-y divide-mist/70 overflow-y-auto">
+      <div className="grid gap-4 lg:grid-cols-[340px_1fr]">
+        {/* conversation list — hidden on phones once a chat is open full-screen */}
+        <Panel className={`anim-rise h-fit overflow-hidden ${active ? "hidden lg:block" : ""}`}>
+          <div className="border-b border-mist bg-paper/60 px-4 py-3">
+            <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.12em] text-soft">Inbox</p>
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-soft" />
+              <input
+                value={inboxQuery}
+                onChange={(e) => setInboxQuery(e.target.value)}
+                placeholder="Search chats…"
+                className="w-full rounded-full border border-mist bg-card py-1.5 pl-8 pr-3 text-[12.5px] text-ink outline-none transition-shadow placeholder:text-soft/60 focus:border-pine-500 focus:ring-2 focus:ring-pine-500/20"
+              />
+            </div>
+          </div>
+          <ul className="max-h-[600px] divide-y divide-mist/70 overflow-y-auto">
             {!groupsLoaded ? (
               <li className="p-3"><SkeletonPanel rows={4} /></li>
             ) : (
             <>
-            {convs.map((c) => {
+            {filteredConvs.map((c) => {
               const peer = db.users.find((u) => u.id === c.participants.find((p) => p !== currentUser?.id));
               const last = [...db.messages.filter((m) => m.conversationId === c.id)].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
               const un = unreadInConversation(db, currentUser, c);
+              const peerOnline = peer ? onlineUserIds.has(peer.id) : false;
               return (
                 <li key={c.id}>
                   <button onClick={() => nav(`/messages/${c.id}`)} className={`flex w-full cursor-pointer items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-pine-50/60 ${active?.id === c.id ? "bg-pine-50" : ""}`}>
-                    <UserAvatar name={peer?.name ?? "?"} role={peer?.role ?? "admin"} size={36} />
+                    <span className="relative shrink-0">
+                      <UserAvatar name={peer?.name ?? "?"} role={peer?.role ?? "admin"} size={40} />
+                      {peerOnline && <span className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-card bg-pine-500" />}
+                    </span>
                     <span className="min-w-0 flex-1">
                       <span className="flex items-center justify-between">
-                        <span className={`truncate text-[13px] ${un ? "font-bold text-ink" : "font-semibold text-ink"}`}>{peer?.name ?? "—"}</span>
-                        {last && <span className="ml-2 shrink-0 text-[10.5px] text-soft">{timeAgo(last.createdAt)}</span>}
+                        <span className={`truncate text-[13.5px] ${un ? "font-bold text-ink" : "font-semibold text-ink"}`}>{peer?.name ?? "—"}</span>
+                        {last && <span className="ml-2 shrink-0 tnum text-[10.5px] text-soft">{timeAgo(last.createdAt)}</span>}
                       </span>
                       <span className={`block truncate text-[11.5px] ${un ? "font-semibold text-pine-800" : "text-soft"}`}>{last ? last.body : "No messages yet"}</span>
                     </span>
@@ -333,72 +487,32 @@ export function MessagesPage() {
                 </li>
               );
             })}
-            {convs.length === 0 && <li className="px-4 py-10 text-center text-[12.5px] text-soft">No conversations yet.</li>}
+            {filteredConvs.length === 0 && (
+              <li className="px-4 py-10 text-center text-[12.5px] text-soft">{convs.length === 0 ? "No conversations yet." : "No chats match your search."}</li>
+            )}
             </>
             )}
           </ul>
         </Panel>
 
-        {/* thread */}
-        <Panel className="anim-rise flex min-h-[480px] flex-col overflow-hidden">
-          {!groupsLoaded ? (
-            <SkeletonPanel rows={5} />
-          ) : !active ? (
-            <EmptyState icon={<Inbox className="h-5 w-5" />} title="Select a conversation" body="Pick a conversation from the inbox, or start a new one with someone you're connected to." />
-          ) : (
+        {/* thread — a normal panel on desktop; on phones it becomes its own
+           full-screen view (fixed, above everything) the instant a chat is
+           opened, exactly like Telegram, instead of stacking under the inbox. */}
+        <div
+          className={
+            active
+              ? "anim-chat-screen fixed inset-0 z-[60] flex flex-col bg-card lg:static lg:z-auto lg:flex lg:min-h-[600px] lg:animate-none lg:overflow-hidden lg:rounded-xl lg:border lg:border-mist lg:shadow-[0_1px_2px_rgba(13,33,26,0.05)]"
+              : "hidden lg:flex lg:min-h-[600px] lg:flex-col lg:overflow-hidden lg:rounded-xl lg:border lg:border-mist lg:bg-card lg:shadow-[0_1px_2px_rgba(13,33,26,0.05)]"
+          }
+        >
+          {!active ? threadEmpty : (
             <>
-              <div className="flex items-center gap-3 border-b border-mist px-4 py-3">
-                <button onClick={() => nav("/messages")} className="cursor-pointer rounded p-1 text-soft hover:bg-paper lg:hidden"><ArrowLeft className="h-4 w-4" /></button>
-                <UserAvatar name={other?.name ?? "?"} role={other?.role ?? "admin"} size={38} />
-                <div className="min-w-0 flex-1">
-                  <p className="truncate font-display text-[14.5px] font-bold text-ink">{other?.name}</p>
-                  <p className="text-[11px] text-soft">
-                    {other && contactContext(db, currentUser, other)}
-                    {relatedStudent && ` · about ${relatedStudent.firstName} ${relatedStudent.lastName}`}
-                  </p>
-                </div>
-                {other && <RoleBadge role={other.role} full />}
-              </div>
-
-              <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto bg-paper/50 px-4 py-4">
-                {messages.map((m) => {
-                  const mine = m.senderId === currentUser?.id;
-                  const sender = db.users.find((u) => u.id === m.senderId);
-                  return (
-                    <div key={m.id} className={`group flex ${mine ? "justify-end" : "justify-start"}`}>
-                      <div className={`max-w-[78%] rounded-xl border px-3.5 py-2.5 shadow-sm ${mine ? "rounded-br-sm border-pine-800 bg-pine-800 text-pine-50" : "rounded-bl-sm border-mist bg-card text-ink"}`}>
-                        {!mine && <p className="mb-0.5 text-[10.5px] font-bold text-pine-700">{sender?.name}</p>}
-                        <p className="whitespace-pre-line text-[13px] leading-relaxed">{m.body}</p>
-                        <p className={`mt-1 flex items-center justify-end gap-1 text-[10px] ${mine ? "text-pine-300" : "text-soft"}`}>
-                          {timeAgo(m.createdAt)}
-                          {mine && <span className="opacity-80">{m.status === "read" ? "· read" : "· sent"}</span>}
-                        </p>
-                      </div>
-                      {!mine && (
-                        <button onClick={() => setReportMsg({ conv: active, messageId: m.id })} title="Report message" className="ml-1.5 self-center rounded p-1 text-soft opacity-0 transition-opacity hover:bg-rust-100 hover:text-rust-600 group-hover:opacity-100">
-                          <Flag className="h-3.5 w-3.5" />
-                        </button>
-                      )}
-                    </div>
-                  );
-                })}
-                {messages.length === 0 && <p className="pt-16 text-center text-[12.5px] text-soft">Say hello — messages stay private to this conversation.</p>}
-              </div>
-
-              <div className="border-t border-mist bg-card px-4 py-3">
-                {canSendMessage(db, currentUser, other ?? null).ok ? (
-                  <div className="flex items-end gap-2">
-                    <TextArea value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Write a message…" className="!min-h-[44px] flex-1"
-                      onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} />
-                    <Btn onClick={send} disabled={!draft.trim()}><Send className="h-4 w-4" /></Btn>
-                  </div>
-                ) : (
-                  <p className="flex items-center gap-2 text-[12.5px] text-soft"><Lock className="h-4 w-4 text-rust-500" /> {canSendMessage(db, currentUser, other ?? null).reason ?? "You can't message this person."}</p>
-                )}
-              </div>
+              {threadHeader}
+              {threadBody}
+              {threadInput}
             </>
           )}
-        </Panel>
+        </div>
       </div>
 
       {composeWith && <ContactPicker onClose={() => setComposeWith(null)} onPick={(u) => { setComposeWith(null); openDirect(u); }} />}

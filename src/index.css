@@ -180,6 +180,40 @@ body {
   animation: tickpulse 2s ease-in-out infinite;
 }
 
+/* ---------- chat screen (Telegram-style full-screen takeover on mobile) ---------- */
+@keyframes chat-screen-in {
+  from {
+    opacity: 0;
+    transform: translateX(4%);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+@keyframes chat-bubble-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.anim-chat-screen {
+  animation: chat-screen-in 0.24s cubic-bezier(0.22, 0.9, 0.3, 1) both;
+}
+.anim-bubble {
+  animation: chat-bubble-in 0.18s cubic-bezier(0.22, 0.9, 0.3, 1) both;
+}
+.chat-tail-mine {
+  border-bottom-right-radius: 4px;
+}
+.chat-tail-theirs {
+  border-bottom-left-radius: 4px;
+}
+
 /* layered ambient background for auth + dashboard hero */
 .auth-panel {
   background-color: var(--color-pine-950);

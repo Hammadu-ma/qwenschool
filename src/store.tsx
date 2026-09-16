@@ -6,6 +6,7 @@ import { buildSeed } from "./data/seed";
 import { supabase, isSupabaseConfigured, usernameToEmail } from "./lib/supabase";
 import {
   hydrate, hydrateCore, hydrateGroup, ALL_LAZY_GROUPS, sync, setProfileId, loadProfileForSession,
+  mapConversations, mapMessages,
   type DbMode, type LazyGroup,
 } from "./lib/backend";
 
@@ -325,6 +326,10 @@ interface Ctx {
    *  time a page that needs them mounts. Safe to call every render — it's a
    *  no-op once loaded or while already in flight. */
   ensureGroup: (group: LazyGroup) => void;
+  /** Ids of users with a live Supabase Realtime presence in this session —
+   *  i.e. currently have the app open. Used for Telegram-style "online"
+   *  indicators in Messages. Empty outside live mode. */
+  onlineUserIds: Set<string>;
 }
 
 const AppCtx = createContext<Ctx | null>(null);
@@ -456,6 +461,66 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return u;
   }, [db, sessionUserId]);
 
+  /* ================= realtime: messages, conversations, presence =================
+   * Keeps Messages Telegram-like: a new message from the other side appears
+   * the instant it's written (no refetch), a read receipt flips the
+   * sender's ticks live, a brand-new conversation someone starts with me
+   * shows up in the inbox on its own, and an "online" dot reflects who
+   * currently has the app open. RLS still decides what each connected
+   * session actually receives — see 0013_enable_realtime_messaging.sql. */
+  const [onlineUserIds, setOnlineUserIds] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    if (mode !== "live" || !supabase || !sessionUserId) {
+      setOnlineUserIds(new Set());
+      return;
+    }
+    const client = supabase;
+    const channel = client.channel("school-realtime", { config: { presence: { key: sessionUserId } } });
+
+    const mergeMessage = (row: any, isUpdate: boolean) => {
+      const msg = mapMessages([row])[0];
+      const cur = dbRef.current;
+      if (!cur.conversations.some((c) => c.id === msg.conversationId)) return; // not (yet) a conversation of mine
+      const exists = cur.messages.some((m) => m.id === msg.id);
+      if (!isUpdate && exists) return; // our own optimistic send already added it
+      if (isUpdate && !exists) return;
+      const next: DB = { ...cur, messages: exists ? cur.messages.map((m) => (m.id === msg.id ? msg : m)) : [...cur.messages, msg] };
+      dbRef.current = next;
+      setDb(next);
+    };
+
+    channel
+      .on("presence", { event: "sync" }, () => {
+        setOnlineUserIds(new Set(Object.keys(channel.presenceState())));
+      })
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages" }, (payload) => mergeMessage(payload.new, false))
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "messages" }, (payload) => mergeMessage(payload.new, true))
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "conversation_participants", filter: `profile_id=eq.${sessionUserId}` },
+        async (payload) => {
+          const conversationId = (payload.new as any).conversation_id as string;
+          if (dbRef.current.conversations.some((c) => c.id === conversationId)) return;
+          const [{ data: convRow }, { data: partRows }] = await Promise.all([
+            client.from("conversations").select("*").eq("id", conversationId).maybeSingle(),
+            client.from("conversation_participants").select("*").eq("conversation_id", conversationId),
+          ]);
+          if (!convRow) return;
+          const conv = mapConversations([convRow], partRows ?? [])[0];
+          const cur = dbRef.current;
+          if (cur.conversations.some((c) => c.id === conv.id)) return;
+          const next: DB = { ...cur, conversations: [conv, ...cur.conversations] };
+          dbRef.current = next;
+          setDb(next);
+        }
+      )
+      .subscribe((status) => {
+        if (status === "SUBSCRIBED") channel.track({ online_at: new Date().toISOString() });
+      });
+
+    return () => { client.removeChannel(channel); };
+  }, [mode, sessionUserId]);
+
   // Session points at a profile RLS didn't include in the hydrated set → pull it in.
   useEffect(() => {
     if (!ready || !sessionUserId || getUser(db, sessionUserId)) return;
@@ -585,7 +650,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     sessionUserId, currentUser, login, logout,
     toast, ui: { toast: toastState }, dismissToast,
     ready, mode, schemaMissing, reconnect, sessionChecked,
-    isGroupLoaded, ensureGroup,
+    isGroupLoaded, ensureGroup, onlineUserIds,
   };
 
   if (!ready) {

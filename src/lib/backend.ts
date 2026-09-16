@@ -183,7 +183,7 @@ function mapAnnouncements(announcements: any[], reads: any[]): Announcement[] {
     readBy: reads.filter((r: any) => r.announcement_id === a.id).map((r: any) => r.profile_id),
   })) as Announcement[];
 }
-function mapConversations(conversations: any[], participants: any[]): Conversation[] {
+export function mapConversations(conversations: any[], participants: any[]): Conversation[] {
   return conversations.map((c: any) => ({
     id: c.id, type: "direct" as const,
     participants: participants.filter((p: any) => p.conversation_id === c.id).map((p: any) => p.profile_id),
@@ -192,7 +192,7 @@ function mapConversations(conversations: any[], participants: any[]): Conversati
     createdAt: c.created_at, updatedAt: c.updated_at, status: c.status,
   })) as Conversation[];
 }
-function mapMessages(messages: any[]): Message[] {
+export function mapMessages(messages: any[]): Message[] {
   return messages.map((m: any) => ({
     id: m.id, conversationId: m.conversation_id, senderId: m.sender_id, body: m.body,
     createdAt: m.created_at, readBy: m.read_by ?? [], status: (m.read_by?.length ?? 0) > 1 ? "read" : "sent",
