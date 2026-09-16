@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { lazy, Suspense, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   BadgeCheck, Baby, BookOpen, CalendarCheck2, CreditCard, FileBarChart2, History, Inbox, KeyRound, Layers, Lock,
@@ -17,7 +17,24 @@ import {
 } from "../ui";
 import { AccessDenied } from "./Auth";
 import { defaultRoleIdFor, hasPermission, pushAudit } from "../rbac";
-import { IDCardModal, RegistrationWizard } from "./registration";
+// Split into their own chunk — the registration wizard (PDF export, ID card
+// rendering) is only needed once someone actually opens one of these modals,
+// not on every visit to the students directory.
+const IDCardModal = lazy(() => import("./registration").then((m) => ({ default: m.IDCardModal })));
+const RegistrationWizard = lazy(() => import("./registration").then((m) => ({ default: m.RegistrationWizard })));
+
+/** Brief loading state for the two modals above while their chunk (which
+ *  bundles jsPDF/html2canvas for ID card export) downloads — a blank click
+ *  with no feedback would look broken, so show something rather than null. */
+function ModalLoading({ onClose }: { onClose: () => void }) {
+  return (
+    <Modal title="Loading…" onClose={onClose}>
+      <div className="flex items-center justify-center py-10">
+        <div className="h-6 w-6 animate-spin rounded-full border-[3px] border-pine-200 border-t-pine-700" />
+      </div>
+    </Modal>
+  );
+}
 
 /* ================= students directory (role-scoped) ================= */
 export function StudentsPage({ scoped }: { scoped?: boolean }) {
@@ -134,7 +151,7 @@ export function StudentsPage({ scoped }: { scoped?: boolean }) {
         )}
       </Panel>
 
-      {regOpen && <RegistrationWizard onClose={() => setRegOpen(false)} onSaved={(id) => nav(`/admin/students/${id}`)} />}
+      {regOpen && <Suspense fallback={<ModalLoading onClose={() => setRegOpen(false)} />}><RegistrationWizard onClose={() => setRegOpen(false)} onSaved={(id) => nav(`/admin/students/${id}`)} /></Suspense>}
     </div>
   );
 }
@@ -555,8 +572,8 @@ export function StudentProfilePage() {
         )}
       </div>
 
-      {editOpen && isAdmin && <RegistrationWizard student={s} onClose={() => setEditOpen(false)} />}
-      {idCardOpen && <IDCardModal student={s} onClose={() => setIdCardOpen(false)} />}
+      {editOpen && isAdmin && <Suspense fallback={<ModalLoading onClose={() => setEditOpen(false)} />}><RegistrationWizard student={s} onClose={() => setEditOpen(false)} /></Suspense>}
+      {idCardOpen && <Suspense fallback={<ModalLoading onClose={() => setIdCardOpen(false)} />}><IDCardModal student={s} onClose={() => setIdCardOpen(false)} /></Suspense>}
     </div>
   );
 }
