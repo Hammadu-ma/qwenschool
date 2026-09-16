@@ -402,8 +402,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
     fn(draft);
     dbRef.current = draft;
     setDb(draft);
-    if (modeRef.current === "live") return sync(prev, draft); // PostgreSQL; RLS decides what lands
-    return Promise.resolve([]);
+    if (modeRef.current !== "live") return Promise.resolve([]);
+    return sync(prev, draft).then(async (errors) => {
+      if (errors.length) {
+        // The optimistic draft may not match what actually landed on the
+        // server — pull the authoritative state back down rather than let
+        // the UI keep showing a change that didn't really save. Without
+        // this, a failed write (e.g. a rejected new user) leaves a
+        // permanent "ghost" record in local state for the rest of the
+        // session — one with a placeholder id that was never swapped for
+        // a real one — which then breaks unrelated features later (e.g. a
+        // notification recipient list built from that ghost user).
+        const { db: loaded } = await hydrate();
+        dbRef.current = loaded;
+        setDb(loaded);
+      }
+      return errors;
+    }); // PostgreSQL; RLS decides what lands
   };
 
   const login = async (username: string, password: string): Promise<{ ok: boolean; error?: string; user?: User }> => {
