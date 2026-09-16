@@ -28,10 +28,34 @@ const anonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined) ?
 
 export const isSupabaseConfigured: boolean = Boolean(url && anonKey);
 
+/*
+ * HMR-safe singleton. Without this, every time Vite hot-reloads this module
+ * (which happens on almost any source edit during `npm run dev`, not just
+ * edits to this file) a *second* GoTrueClient gets constructed pointing at
+ * the same localStorage auth-token key as the first. The two clients then
+ * fight over the same `navigator.locks` mutex GoTrue uses to serialize
+ * session refresh/read — and if the old instance's lock is never released
+ * (the old module instance is gone, so nothing ever calls its callback),
+ * every future call that needs the session — including the very first
+ * schema probe on boot — hangs forever waiting on a lock nobody will ever
+ * free. That is the "always loading" symptom: not a slow network, a
+ * deadlock. Stashing the client on `globalThis` means HMR reuses the exact
+ * same instance instead of minting a new one, so the lock is only ever
+ * held by one client. A full page reload still starts clean as normal.
+ */
+declare global {
+  // eslint-disable-next-line no-var
+  var __riverside_supabase_client__: SupabaseClient | undefined;
+}
+
+function makeClient(): SupabaseClient {
+  return createClient(url!, anonKey!, {
+    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
+  });
+}
+
 export const supabase: SupabaseClient | null = isSupabaseConfigured
-  ? createClient(url!, anonKey!, {
-      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
-    })
+  ? (globalThis.__riverside_supabase_client__ ??= makeClient())
   : null;
 
 export const supabaseProjectUrl = url ?? null;

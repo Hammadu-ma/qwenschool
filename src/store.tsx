@@ -552,7 +552,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setProfileId(id);
     const profile = await loadProfileForSession(id);
     if (profile) {
-      if (profile.status !== "active") { await supabase.auth.signOut(); setSessionUserId(null); setProfileId(null); return { ok: false, error: "This account has been disabled. Contact the administrator." }; }
+      if (profile.status !== "active") { await supabase.auth.signOut().catch(() => {}); setSessionUserId(null); setProfileId(null); return { ok: false, error: "This account has been disabled. Contact the administrator." }; }
       update((d) => { d.users = [...d.users.filter((u) => u.id !== profile.id), profile]; });
       return { ok: true, user: profile };
     }
@@ -560,7 +560,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   const logout = () => {
-    supabase?.auth.signOut();
+    // Only ask Supabase to invalidate a session if one could actually exist
+    // (live mode). In local/off mode there's no Supabase session to begin
+    // with, so calling signOut() unconditionally — as this used to do —
+    // hits /auth/v1/logout with no valid token and logs a 403 on every
+    // logout in demo mode. .catch swallows the remaining case (a token that
+    // expired or was already invalidated server-side) — Supabase still
+    // clears its local auth state regardless of whether the server call
+    // succeeds, so there's nothing to recover from.
+    if (mode === "live") supabase?.auth.signOut().catch(() => {});
     setSessionUserId(null);
     setProfileId(null);
     clearPersistedCache();

@@ -31,20 +31,60 @@ const sb = () => supabase;
 export type DbMode = "live" | "local" | "off";
 
 /**
+ * Every network call below goes through this. Supabase calls can hang
+ * indefinitely rather than reject — a browser extension silently dropping
+ * the request, a paused/unreachable project with no fast failure, or a
+ * stuck auth lock (see the comment in lib/supabase.ts) — and none of that
+ * surfaces as a rejected promise on its own. Without a hard ceiling here, a
+ * single stuck request means `await`-ing code never resumes, `hydrateCore`
+ * never settles, and the app is stuck on the boot spinner forever with no
+ * way to recover short of the user giving up and closing the tab.
+ * Wrapping every call in a timeout guarantees boot always reaches a
+ * decision (live / local / off) within a bounded time.
+ */
+const NETWORK_TIMEOUT_MS = 10_000;
+
+class BackendTimeoutError extends Error {
+  constructor(label: string, ms: number) {
+    super(`${label} did not respond within ${ms}ms`);
+    this.name = "BackendTimeoutError";
+  }
+}
+
+function withTimeout<T>(promise: PromiseLike<T>, label: string, ms = NETWORK_TIMEOUT_MS): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new BackendTimeoutError(label, ms)), ms);
+    Promise.resolve(promise).then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); },
+    );
+  });
+}
+
+/**
  * Probe the remote schema without writing anything. Distinguishes:
  *   live    — tables exist (data may be empty)
- *   missing — reachable project, migrations not applied (PGRST205 / 42P01)
+ *   missing — reachable project, migrations not applied (PGRST205 / 42P01) —
+ *             also used when the probe times out, since either way the
+ *             right move is the same: fall back to the offline demo seed
+ *             instead of hanging, and let the user retry via "Reconnect".
  *   off     — client not configured
  */
 export async function checkSchema(): Promise<DbMode | "missing"> {
   if (!isSupabaseConfigured) return "off";
-  const { error } = await sb()!.from("schools").select("id").limit(1);
-  if (!error) return "live";
-  const code = (error as { code?: string }).code ?? "";
-  const msg = error.message ?? "";
-  if (code === "PGRST205" || code === "42P01" || /does not exist|Could not find the table/i.test(msg)) return "missing";
-  console.warn("[backend] schema probe failed:", msg);
-  return "missing";
+  try {
+    const { error } = await withTimeout(sb()!.from("schools").select("id").limit(1), "schema probe");
+    if (!error) return "live";
+    const code = (error as { code?: string }).code ?? "";
+    const msg = error.message ?? "";
+    if (code === "PGRST205" || code === "42P01" || /does not exist|Could not find the table/i.test(msg)) return "missing";
+    console.warn("[backend] schema probe failed:", msg);
+    return "missing";
+  } catch (e) {
+    const detail = e instanceof BackendTimeoutError ? e.message : String((e as Error)?.message ?? e);
+    console.warn("[backend] schema probe did not complete — falling back to offline demo mode:", detail);
+    return "missing";
+  }
 }
 
 /**
@@ -100,12 +140,18 @@ export async function applyMigrations(
 
 async function sel<T = any>(table: string, select = "*"): Promise<T[] | null> {
   if (!isSupabaseConfigured) return null;
-  const { data, error } = await sb()!.from(table).select(select);
-  if (error) {
-    console.warn(`[backend] could not read ${table}:`, error.message);
+  try {
+    const { data, error } = await withTimeout(sb()!.from(table).select(select), `select ${table}`);
+    if (error) {
+      console.warn(`[backend] could not read ${table}:`, error.message);
+      return null;
+    }
+    return (data as T[]) ?? [];
+  } catch (e) {
+    const detail = e instanceof BackendTimeoutError ? e.message : String((e as Error)?.message ?? e);
+    console.warn(`[backend] could not read ${table}:`, detail);
     return null;
   }
-  return (data as T[]) ?? [];
 }
 
 export type LazyGroup =
