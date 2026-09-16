@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useQuery, useQueries, useQueryClient, useIsRestoring } from "@tanstack/react-query";
+import { useQuery, useQueries, useQueryClient } from "@tanstack/react-query";
 import type {
   AssessmentStructure, Audience, DB, Role, Student, User,
 } from "./types";
@@ -361,17 +361,14 @@ const groupQueryKey = (g: LazyGroup) => ["group", g] as const;
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
-  // True until the persist plugin has finished reading localStorage back
-  // into the query cache. Combined with a cache hit, this is what replaces
-  // the old `cached ?` instant-paint check — if there's persisted core data,
-  // coreQuery.data is populated the instant restoration finishes, no network
-  // round trip needed to paint the first screen.
-  const isRestoring = useIsRestoring();
 
+  // No persisted cache to wait on (see lib/queryClient.ts) — every mount of
+  // this provider (i.e. every fresh tab / hard reload) goes straight to
+  // Supabase via hydrateCore(). The boot spinner covers exactly this one
+  // round trip.
   const coreQuery = useQuery({
     queryKey: coreQueryKey,
     queryFn: hydrateCore,
-    enabled: !isRestoring,
   });
 
   const coreDb = coreQuery.data?.db ?? buildSeed();
@@ -408,7 +405,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [coreDb, mode, ...groupQueries.map((q) => q.data)]);
 
-  const ready = !isRestoring && (mode !== "off" || coreQuery.isFetched || coreQuery.isError);
+  const ready = mode !== "off" || coreQuery.isFetched || coreQuery.isError;
   const [sessionUserId, setSessionUserId] = useState<string | null>(null);
   const [yearId, setYearId] = useState("");
   const [toastState, setToastState] = useState<Toast | null>(null);

@@ -1,12 +1,14 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client";
+import { QueryClientProvider } from "@tanstack/react-query";
 import "./index.css";
 import App from "./App.tsx";
-import { queryClient, persister } from "./lib/queryClient";
+import { queryClient } from "./lib/queryClient";
 
+// Plain (non-persisting) provider — see lib/queryClient.ts for why this data
+// stays in memory only and is never written to localStorage/IndexedDB.
 ReactDOM.createRoot(document.getElementById("root")!).render(
-  <PersistQueryClientProvider client={queryClient} persistOptions={{ persister, maxAge: Infinity }}>
+  <QueryClientProvider client={queryClient}>
     <App />
-  </PersistQueryClientProvider>
+  </QueryClientProvider>
 );

@@ -1,5 +1,4 @@
 import { QueryClient } from "@tanstack/react-query";
-import { createSyncStoragePersister } from "@tanstack/query-sync-storage-persister";
 
 /**
  * Replaces the old hand-rolled `dbCache.ts` (one giant localStorage blob) and
@@ -7,15 +6,19 @@ import { createSyncStoragePersister } from "@tanstack/query-sync-storage-persist
  * logic that used to live in store.tsx. TanStack Query now owns:
  *   - request dedup (two components mounting the same query key in the same
  *     tick only fire one fetch)
- *   - per-query-key persistence (core and each lazy group cache/restore
- *     independently, instead of one JSON blob that had to be merged by hand
- *     on every boot — see the old `mergeCoreIntoCached`)
+ *   - per-query-key caching (core and each lazy group live independently in
+ *     memory, instead of one JSON blob that had to be merged by hand on
+ *     every boot — see the old `mergeCoreIntoCached`)
  *   - stale-while-revalidate semantics via `staleTime`
  *
- * staleTime is Infinity everywhere: nothing here is time-based stale data,
- * it's "have we fetched this at all this session" data. Refetching happens
- * explicitly (reconnect(), error-recovery, realtime invalidation later) not
- * on a timer or on window refocus.
+ * IMPORTANT: this cache is in-memory only, for the lifetime of the tab. It
+ * is deliberately NOT persisted to localStorage/IndexedDB — school records
+ * (students, marks, fees, messages…) should never sit in browser storage
+ * as an offline copy. Every fresh tab / hard reload re-hydrates straight
+ * from Supabase, with RLS deciding what this session's user may see, same
+ * as any other request. staleTime is Infinity because that re-fetch on
+ * mount is enough — nothing here needs to re-poll on a timer or on window
+ * refocus, it just shouldn't survive the tab closing.
  */
 export const queryClient = new QueryClient({
   defaultOptions: {
@@ -29,16 +32,20 @@ export const queryClient = new QueryClient({
   },
 });
 
-const STORAGE_KEY = "riverside.query-cache.v1";
+/** Wipes the in-memory query cache — used on logout, so the next sign-in
+ *  (possibly a different user) can't read a moment of the previous
+ *  session's data out of a stale cache entry. Also clears the localStorage
+ *  key an older build of this app used to persist the cache under, so
+ *  anyone upgrading from that build doesn't keep carrying a stale offline
+ *  copy of school data around in their browser. */
+const LEGACY_STORAGE_KEY = "riverside.query-cache.v1";
 
-export const persister = createSyncStoragePersister({
-  key: STORAGE_KEY,
-  storage: typeof window !== "undefined" ? window.localStorage : undefined,
-});
+// One-time cleanup on load, not just on logout — someone upgrading from the
+// old persisted-cache build has that key sitting in localStorage right now,
+// independent of whether/when they next log out.
+try { window.localStorage.removeItem(LEGACY_STORAGE_KEY); } catch { /* ignore */ }
 
-/** Fully wipes persisted + in-memory cache — used on logout, matching the
- *  old clearCachedDb(). */
 export function clearPersistedCache() {
   queryClient.clear();
-  try { window.localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
+  try { window.localStorage.removeItem(LEGACY_STORAGE_KEY); } catch { /* ignore */ }
 }
