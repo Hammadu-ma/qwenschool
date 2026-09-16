@@ -107,14 +107,14 @@ export async function hydrate(): Promise<{ db: DB; mode: DbMode; schemaMissing: 
   // Parallel reads; any table that fails (e.g. migration not yet applied)
   // falls back to the seed so the UI still renders — loudly, not silently.
   const [
-    schools, years, classes, sections, subjects, teachers, assignments,
+    schools, years, terms, classes, sections, subjects, teachers, assignments,
     students, enrollments, documents, structures, items, marks, submissions,
     gradeBands, registers, entries, fees, homework, timetable,
     roleDefs, rolePerms, profiles, guardianStudents,
     announcements, announcementReads, conversations, participants,
     messages, notifications, events, audit,
   ] = await Promise.all([
-    sel("schools"), sel("academic_years"), sel("classes"), sel("sections"),
+    sel("schools"), sel("academic_years"), sel("terms"), sel("classes"), sel("sections"),
     sel("subjects"), sel("teachers"), sel("teacher_assignments"),
     sel("students"), sel("enrollments"), sel("student_documents"),
     sel("assessment_structures"), sel("assessment_items"), sel("assessment_marks"),
@@ -135,6 +135,7 @@ export async function hydrate(): Promise<{ db: DB; mode: DbMode; schemaMissing: 
     if (s) db.settings = { schoolName: s.name, motto: s.motto ?? "" };
   }
   if (years) db.years = years.map((y: any) => ({ id: y.id, name: y.name, start: y.start_date, end: y.end_date, active: y.is_active }));
+  if (terms) db.terms = (terms as any[]).map((t) => ({ id: t.id, yearId: t.year_id, name: t.name, seq: t.seq }));
   if (classes && sections) {
     db.classes = classes.map((c: any) => ({
       id: c.id, name: c.name, level: c.level,
@@ -170,7 +171,7 @@ export async function hydrate(): Promise<{ db: DB; mode: DbMode; schemaMissing: 
 
   if (structures && items) {
     db.structures = structures.map((st: any) => ({
-      id: st.id, yearId: st.year_id, classId: st.class_id, subjectId: st.subject_id, period: termName(st.term_id),
+      id: st.id, yearId: st.year_id, classId: st.class_id, subjectId: st.subject_id, period: termName(db, st.term_id),
       items: items.filter((i: any) => i.structure_id === st.id).sort((a: any, b: any) => a.sort - b.sort)
         .map((i: any) => ({ id: i.id, name: i.name, max: Number(i.max_mark), weight: Number(i.weight) })),
     })) as AssessmentStructure[];
@@ -270,13 +271,6 @@ export async function hydrate(): Promise<{ db: DB; mode: DbMode; schemaMissing: 
   return { db, mode: remote ? "live" : "local", schemaMissing: false };
 }
 
-function termName(termId: string | null | undefined): string {
-  if (!termId) return "Annual";
-  if (termId.includes("s1")) return "Semester 1";
-  if (termId.includes("s2")) return "Semester 2";
-  return "Annual";
-}
-
 /* =========================================================================
    sync — DB-diff → PostgreSQL
    ========================================================================= */
@@ -332,7 +326,7 @@ function rowsOf(db: DB) {
     student_documents: db.students.flatMap((s) => s.documents.map((d) => ({
       id: d.id, student_id: s.id, name: d.name, kind: d.kind, size: d.size, doc_date: d.date, storage_path: null,
     }))),
-    assessment_structures: db.structures.map((st) => ({ id: st.id, year_id: st.yearId, class_id: st.classId, subject_id: st.subjectId, term_id: termId(st.period) })),
+    assessment_structures: db.structures.map((st) => ({ id: st.id, year_id: st.yearId, class_id: st.classId, subject_id: st.subjectId, term_id: termId(db, st.yearId, st.period) })),
     assessment_items: db.structures.flatMap((st) => st.items.map((i, idx) => ({ id: i.id, structure_id: st.id, name: i.name, max_mark: i.max, weight: i.weight, sort: idx }))),
     mark_submissions: db.submissions.map((s) => ({
       id: s.id, structure_id: s.structureId, status: s.status,
@@ -353,10 +347,23 @@ function rowsOf(db: DB) {
   return R;
 }
 
-function termId(period: string): string | null {
-  if (period === "Semester 1") return "y26-s1";
-  if (period === "Semester 2") return "y26-s2";
-  return null;
+// Looks up the real term row instead of guessing from substrings in the id —
+// the previous version checked for "s1"/"s2" in the id, but seeded/created
+// term ids actually use "t1"/"t2" (e.g. "y26-t1"), so it always fell through
+// to "Annual" for every real term.
+function termName(db: DB, termId: string | null | undefined): string {
+  if (!termId) return "Annual";
+  return db.terms.find((t) => t.id === termId)?.name ?? "Annual";
+}
+
+// Resolves a structure's (yearId, period) back to the matching terms.id for
+// the FK column. Previously hardcoded two ids for a single academic year
+// ("y26-s1"/"y26-s2") that never matched any real row — every save of a
+// Semester 1/2 structure violated assessment_structures_term_id_fkey.
+function termId(db: DB, yearId: string, period: string): string | null {
+  const p = period.trim().toLowerCase();
+  if (p === "annual") return null; // term_id is nullable; "Annual" has no term row to link
+  return db.terms.find((t) => t.yearId === yearId && t.name.trim().toLowerCase() === p)?.id ?? null;
 }
 
 let chain: Promise<void> = Promise.resolve();

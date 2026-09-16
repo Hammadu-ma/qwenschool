@@ -141,6 +141,18 @@ export function buildSeed(): DB {
     { id: "y26", name: "2026/27", start: "2026-09-14", end: "2027-07-02", active: true },
   ];
 
+  // Mirrors supabase/migrations/0003_seed_core.sql exactly — this is what
+  // termId()/termName() in backend.ts resolve assessment_structures.term_id
+  // against, so a mismatch here breaks structure saving with a foreign-key error.
+  const terms: DB["terms"] = [
+    { id: "y25-t1", yearId: "y25", name: "Semester 1", seq: 1 },
+    { id: "y25-t2", yearId: "y25", name: "Semester 2", seq: 2 },
+    { id: "y25-ann", yearId: "y25", name: "Annual", seq: 3 },
+    { id: "y26-t1", yearId: "y26", name: "Semester 1", seq: 1 },
+    { id: "y26-t2", yearId: "y26", name: "Semester 2", seq: 2 },
+    { id: "y26-ann", yearId: "y26", name: "Annual", seq: 3 },
+  ];
+
   const classes: DB["classes"] = [
     { id: "c7", name: "Grade 7", level: 7, sections: [{ id: "sec7a", name: "A" }, { id: "sec7b", name: "B" }] },
     {
@@ -445,6 +457,7 @@ export function buildSeed(): DB {
   return {
     users,
     years,
+    terms,
     classes,
     subjects,
     teachers,

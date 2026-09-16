@@ -369,9 +369,17 @@ export interface Settings {
   motto: string;
 }
 
+export interface Term {
+  id: ID;
+  yearId: ID;
+  name: string;
+  seq: number;
+}
+
 export interface DB {
   users: User[];
   years: AcademicYear[];
+  terms: Term[];
   classes: SchoolClass[];
   subjects: Subject[];
   teachers: Teacher[];
