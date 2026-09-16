@@ -265,6 +265,20 @@ function mapReports(reports: any[]): MessageReport[] {
  */
 export async function hydrateCore(): Promise<{ db: DB; mode: DbMode; schemaMissing: boolean }> {
   const seed = buildSeed();
+
+  // Wait for the Supabase Auth client to finish restoring/refreshing its
+  // session before firing a single data request. Without this, the probe
+  // and the 14 selects below can race an in-flight token restore/refresh:
+  // some requests go out before it settles (stale/expired token → treated
+  // as anonymous or rejected by PostgREST), some go out after (the real,
+  // correctly-scoped token) — so different tables in the SAME boot end up
+  // answered under different identities. That's exactly what produces
+  // "sometimes shows all students, sometimes one, sometimes just the demo
+  // seed" on reload: it's not random, it's a stale/fresh-token split race.
+  // getSession() resolves only once any pending refresh is done, and every
+  // request below shares that one settled outcome.
+  if (isSupabaseConfigured) await sb()!.auth.getSession().catch(() => {});
+
   const probe = await checkSchema();
   if (probe === "off") return { db: seed, mode: "off", schemaMissing: false };
   if (probe === "missing") return { db: seed, mode: "local", schemaMissing: true };
@@ -279,6 +293,20 @@ export async function hydrateCore(): Promise<{ db: DB; mode: DbMode; schemaMissi
     sel("students"), sel("enrollments"), sel("student_documents"),
     sel("role_defs"), sel("role_permissions"), sel("profiles"), sel("guardian_students"),
   ]);
+
+  // Identity-scoped tables (who am I, which students can I see) are the
+  // ones that go wrong under the exact race described above. `null` here
+  // means the request actually failed/timed out — not "0 rows because RLS
+  // legitimately has nothing to show me" (that comes back as `[]`, which
+  // is fine and expected e.g. for a brand-new account). If either failed,
+  // refuse to merge: presenting real school-structure data (years, classes,
+  // subjects) next to leftover seed placeholder people is a worse, more
+  // confusing state than a clean, clearly-labelled full demo fallback.
+  // reconnect() (the "Re-check & connect" button) retries the whole thing.
+  if (students === null || profiles === null) {
+    console.warn("[backend] core identity data (students/profiles) failed to load — falling back to the offline demo seed instead of merging a partial result.");
+    return { db: seed, mode: "local", schemaMissing: false };
+  }
 
   const db: DB = seed;
   let remote = false;
