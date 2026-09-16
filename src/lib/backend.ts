@@ -535,7 +535,7 @@ async function doSync(oldDB: DB, newDB: DB, errors: string[]): Promise<void> {
   const ordered = [
     "academic_years", "terms", "classes", "sections", "subjects", "teachers", "students",
     "teacher_assignments", "enrollments", "student_documents",
-    "assessment_structures", "assessment_items", "grade_bands",
+    "assessment_structures", "assessment_items", "mark_submissions", "grade_bands",
     "fee_items", "homework", "timetable_entries", "role_defs",
     "announcements", "conversations", "events",
   ];
@@ -570,6 +570,19 @@ async function doSync(oldDB: DB, newDB: DB, errors: string[]): Promise<void> {
         if (error) errors.push(`assessment_marks: ${error.message}`);
       }
     }
+  }
+
+  // assessment submission workflow (one row per structure): submit/approve/return/publish state
+  {
+    const { up, del } = diff(o.mark_submissions ?? [], n.mark_submissions ?? []);
+    if (up.length) await upsert("mark_submissions", up.map((s) => ({
+      id: s.id, structure_id: s.structureId, status: s.status,
+      submitted_by: s.submittedBy, submitted_at: s.submittedAt,
+      approved_by: s.approvedBy, approved_at: s.approvedAt,
+      returned_by: s.returnedBy, returned_at: s.returnedAt, return_reason: s.returnReason,
+      published_by: s.publishedBy, published_at: s.publishedAt, reopen_reason: s.reopenReason ?? null,
+    })), "structure_id", errors);
+    if (del.length) await remove("mark_submissions", del.map((s) => s.id), errors);
   }
 
   // attendance registers + entries (replace-per-register)

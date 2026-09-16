@@ -8,18 +8,6 @@ import {
   hydrate, hydrateCore, hydrateGroup, ALL_LAZY_GROUPS, sync, setProfileId, loadProfileForSession,
   type DbMode, type LazyGroup,
 } from "./lib/backend";
-import { loadCachedDb, saveCachedDb, clearCachedDb } from "./lib/dbCache";
-
-/** The small reference data hydrateCore() loads eagerly — used to merge a
- *  fresh core hydrate into whatever lazy-group data an old cache still has,
- *  instead of the fresh (core-only) snapshot blowing that away. */
-const CORE_FIELDS = ["settings", "years", "terms", "classes", "subjects", "teachers", "assignments", "students", "roles", "users"] as const;
-function mergeCoreIntoCached(freshCore: DB, cachedDb: DB | null): DB {
-  if (!cachedDb) return freshCore;
-  const merged: DB = { ...cachedDb };
-  for (const f of CORE_FIELDS) (merged as any)[f] = (freshCore as any)[f];
-  return merged;
-}
 
 export const uid = () => crypto.randomUUID();
 
@@ -342,22 +330,16 @@ interface Ctx {
 const AppCtx = createContext<Ctx | null>(null);
 
 export function AppProvider({ children }: { children: ReactNode }) {
-  const cached = useMemo(() => (isSupabaseConfigured ? loadCachedDb() : null), []);
-  const [db, setDb] = useState<DB>(() => cached ?? buildSeed());
-  // A cache hit means we can paint immediately — the real fetch still runs
-  // in the background and silently replaces this the moment it lands.
-  const [ready, setReady] = useState(!!cached);
-  const [mode, setMode] = useState<DbMode>(cached ? "live" : "off");
+  const [db, setDb] = useState<DB>(() => buildSeed());
+  const [ready, setReady] = useState(false);
+  const [mode, setMode] = useState<DbMode>("off");
   const [schemaMissing, setSchemaMissing] = useState(false);
   const [sessionUserId, setSessionUserId] = useState<string | null>(null);
-  // False until the initial supabase.auth.getSession() call resolves. With a
-  // cached snapshot, `ready` flips true on the very first render (to paint
-  // instantly), but sessionUserId is still null at that point — routes that
-  // redirect-to-login on "no currentUser" must wait for this instead, or
-  // they bounce an already-signed-in person to /login before the session
-  // check has had a chance to run.
+  // False until the initial supabase.auth.getSession() call resolves. Routes
+  // that redirect-to-login on "no currentUser" must wait for this instead of
+  // reading a not-yet-checked session as "signed out".
   const [sessionChecked, setSessionChecked] = useState(false);
-  const [yearId, setYearId] = useState(() => cached ? (cached.years.find((y) => y.active)?.id ?? cached.years[0]?.id ?? "") : "");
+  const [yearId, setYearId] = useState("");
   const [toastState, setToastState] = useState<Toast | null>(null);
   const dbRef = useRef(db);
   // Which feature groups this session has actually fetched — tracked with
@@ -368,11 +350,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const loadingGroupsRef = useRef<Set<LazyGroup>>(new Set());
   const [loadedGroupsTick, setLoadedGroupsTick] = useState(0);
 
-  /* Boot: check the session first (a local token read, not a network round
-   * trip in the common case) so — combined with a cache hit — we can paint
-   * the correct screen (dashboard or login) immediately. hydrate() then
-   * refreshes quietly in the background; no visible reconnect, the data
-   * just becomes current a moment later. */
+  /* Boot: every load goes straight to Supabase — no local cache, no fake
+   * seed standing in as if it were real data. The spinner stays up until
+   * hydrateCore() actually resolves against the live database. */
   useEffect(() => {
     let mounted = true;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -389,43 +369,35 @@ export function AppProvider({ children }: { children: ReactNode }) {
         });
       }
       if (!isRetry) setSessionChecked(true);
-      if (!isRetry && cached) setReady(true); // we already know what to show — no spinner
 
       // hydrateCore() only pulls the small reference data (school structure,
       // people, permissions) — a dozen tables instead of all 33 — so first
       // paint no longer waits on messages/attendance/fees/marks/etc. Those
       // load lazily via ensureGroup() the moment a page that needs them
-      // mounts. Any lazy-group data left over from a previous cached
-      // session is preserved (stale-until-revalidated) rather than wiped.
+      // mounts.
       const { db: core, mode: m, schemaMissing: missing, transientError } = await hydrateCore();
       if (!mounted) return;
 
       if (transientError) {
         // The probe itself failed (network blip, timeout) — this is NOT
-        // "schema missing" or "not configured". If we already have a cached
-        // live session, leave mode/db/cache exactly as they are (don't kick
-        // the person to a fake local-demo state or wipe real data) and
-        // quietly retry once shortly after instead.
-        if (cached || modeRef.current === "live") {
-          setReady(true);
+        // "schema missing" or "not configured". If we're already live this
+        // session, leave mode/db exactly as they are (don't kick the person
+        // to a fake local-demo state) and quietly retry once shortly after.
+        if (modeRef.current === "live") {
           if (!isRetry) retryTimer = setTimeout(() => { attempt(true); }, 4000);
           return;
         }
-        // No prior good state to fall back on (first-ever load, offline) —
-        // surface the connect/retry screen rather than fake seed data.
         setMode("off");
         setSchemaMissing(false);
         setReady(true);
         return;
       }
 
-      const merged = m === "live" ? mergeCoreIntoCached(core, cached) : core;
-      dbRef.current = merged;
-      setDb(merged);
+      dbRef.current = core;
+      setDb(core);
       setMode(m);
       setSchemaMissing(missing);
-      setYearId(merged.years.find((y) => y.active)?.id ?? merged.years[0]?.id ?? "");
-      if (m === "live") saveCachedDb(merged); else clearCachedDb();
+      setYearId(core.years.find((y) => y.active)?.id ?? core.years[0]?.id ?? "");
       setReady(true);
     };
 
@@ -469,7 +441,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const merged: DB = { ...dbRef.current, ...partial };
         dbRef.current = merged;
         setDb(merged);
-        saveCachedDb(merged);
       })
       .catch((e) => console.warn(`[store] failed to load ${group}:`, e))
       .finally(() => {
@@ -562,7 +533,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     supabase?.auth.signOut();
     setSessionUserId(null);
     setProfileId(null);
-    clearCachedDb();
   };
 
   const toast = (msg: string, tone: "ok" | "warn" = "ok") => setToastState({ id: Date.now(), msg, tone });
@@ -587,7 +557,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         <div className="anim-rise text-center">
           <div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-[3px] border-pine-200 border-t-pine-700" />
           <p className="font-display text-[15px] font-bold text-ink">Riverside SMS</p>
-          <p className="mt-1 text-[12px] text-soft">{isSupabaseConfigured ? "Connecting to Supabase…" : "Starting in offline demo mode…"}</p>
+          <p className="mt-1 text-[12px] text-soft">{isSupabaseConfigured ? "Connecting to Supabase…" : "Supabase isn't configured — set VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY."}</p>
         </div>
       </div>
     );

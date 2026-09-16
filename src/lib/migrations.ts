@@ -6,6 +6,10 @@ import m5 from "../../supabase/migrations/0005_repair_auth_seed.sql?raw";
 import m6 from "../../supabase/migrations/0006_fee_payments.sql?raw";
 import m7 from "../../supabase/migrations/0007_fix_create_user_email.sql?raw";
 import m8 from "../../supabase/migrations/0008_fix_auth_token_columns.sql?raw";
+import m9 from "../../supabase/migrations/0009_lowercase_usernames.sql?raw";
+import m10 from "../../supabase/migrations/0010_academic_years_permission.sql?raw";
+import m11 from "../../supabase/migrations/0011_conversation_participants_policy.sql?raw";
+import m12 from "../../supabase/migrations/0012_student_visible_published_submissions.sql?raw";
 
 /**
  * The migration bundle ships inside the app as plain text. SQL DDL is not a
@@ -42,6 +46,10 @@ export const MIGRATIONS: MigrationFile[] = [
   { file: "0006_fee_payments.sql", title: "Fee payments — per-transaction method & reference history", sql: m6 },
   { file: "0007_fix_create_user_email.sql", title: "Fix: blank email broke login for newly created accounts", sql: m7 },
   { file: "0008_fix_auth_token_columns.sql", title: "Fix: 500 on login for accounts created after registration (auth token columns)", sql: m8 },
+  { file: "0009_lowercase_usernames.sql", title: "Fix: login failed for usernames typed with any capital letters", sql: m9 },
+  { file: "0010_academic_years_permission.sql", title: "Adds a dedicated academic-years/terms management permission", sql: m10 },
+  { file: "0011_conversation_participants_policy.sql", title: "Fix: starting a new direct conversation always failed", sql: m11 },
+  { file: "0012_student_visible_published_submissions.sql", title: "Fix: students/guardians saw no grades even once published", sql: m12 },
 ];
 
 /**
