@@ -161,6 +161,11 @@ export function MarkEntryPage() {
   const [confirmPublish, setConfirmPublish] = useState(false);
   const [reopenOpen, setReopenOpen] = useState(false);
   const [reopenReasonInput, setReopenReasonInput] = useState("");
+  // Tracks which workflow action (if any) is mid-flight, so its button can
+  // show a spinner and every button can be disabled — without this there was
+  // no feedback while `update()` was awaiting the server round-trip, which
+  // made a slow save look hung and invited a second, overlapping click.
+  const [workflowBusy, setWorkflowBusy] = useState<"submit" | "approve" | "return" | "publish" | "reopen" | null>(null);
 
   const ensureSubmission = (d: { submissions: Submission[] }, structureId: string): Submission => {
     let s = d.submissions.find((x) => x.structureId === structureId);
@@ -172,7 +177,8 @@ export function MarkEntryPage() {
   };
 
   const doSubmit = async () => {
-    if (!structure || !currentUser) return;
+    if (!structure || !currentUser || workflowBusy) return;
+    setWorkflowBusy("submit");
     const errors = await update((d) => {
       const s = ensureSubmission(d, structure.id);
       s.status = "submitted";
@@ -183,13 +189,15 @@ export function MarkEntryPage() {
       const approvers = d.users.filter((u) => u.status === "active" && u.id !== currentUser.id && d.roles.find((r) => r.id === u.roleId)?.permissions.includes("results.manage"));
       pushNotifications(d, approvers.map((u) => u.id), "result", "Marks awaiting review", `${currentUser.name} submitted ${getSubject(db, structure.subjectId)?.name} — ${getClass(db, structure.classId)?.name}.`);
     });
+    setWorkflowBusy(null);
     setConfirmSubmit(false);
     if (errors.length) toast(describeSyncErrors(errors), "warn");
     else toast("Submitted for administrative review.");
   };
 
   const doApprove = async () => {
-    if (!structure || !currentUser) return;
+    if (!structure || !currentUser || workflowBusy) return;
+    setWorkflowBusy("approve");
     const errors = await update((d) => {
       const s = ensureSubmission(d, structure.id);
       s.status = "approved";
@@ -198,12 +206,14 @@ export function MarkEntryPage() {
       pushAudit(d, currentUser, "marks.approve", `${getSubject(db, structure.subjectId)?.name} · ${getClass(db, structure.classId)?.name}`, "Approved");
       if (s.submittedBy) pushNotifications(d, [s.submittedBy], "result", "Marks approved", `Your ${getSubject(db, structure.subjectId)?.name} marks were approved by ${currentUser.name}.`);
     });
+    setWorkflowBusy(null);
     if (errors.length) toast(describeSyncErrors(errors), "warn");
     else toast("Marks approved.");
   };
 
   const doReturn = async () => {
-    if (!structure || !currentUser || !returnReason.trim()) { toast("A reason is required to return marks.", "warn"); return; }
+    if (!structure || !currentUser || !returnReason.trim() || workflowBusy) { if (!returnReason.trim()) toast("A reason is required to return marks.", "warn"); return; }
+    setWorkflowBusy("return");
     const errors = await update((d) => {
       const s = ensureSubmission(d, structure.id);
       s.status = "returned";
@@ -213,6 +223,7 @@ export function MarkEntryPage() {
       pushAudit(d, currentUser, "marks.return", `${getSubject(db, structure.subjectId)?.name} · ${getClass(db, structure.classId)?.name}`, returnReason.trim());
       if (s.submittedBy) pushNotifications(d, [s.submittedBy], "result", "Marks returned for correction", returnReason.trim());
     });
+    setWorkflowBusy(null);
     setReturnOpen(false);
     setReturnReason("");
     if (errors.length) toast(describeSyncErrors(errors), "warn");
@@ -220,7 +231,8 @@ export function MarkEntryPage() {
   };
 
   const doPublish = async () => {
-    if (!structure || !currentUser) return;
+    if (!structure || !currentUser || workflowBusy) return;
+    setWorkflowBusy("publish");
     const errors = await update((d) => {
       const s = ensureSubmission(d, structure.id);
       s.status = "published";
@@ -231,13 +243,15 @@ export function MarkEntryPage() {
       const recipients = d.users.filter((u) => u.status === "active" && (classStudents.some((st) => u.studentId === st.id) || (u.childrenIds ?? []).some((cid) => classStudents.some((st) => st.id === cid))));
       pushNotifications(d, recipients.map((u) => u.id), "result", "Results published", `${getSubject(db, structure.subjectId)?.name} results for ${getClass(db, structure.classId)?.name} are now available.`);
     });
+    setWorkflowBusy(null);
     setConfirmPublish(false);
     if (errors.length) toast(describeSyncErrors(errors), "warn");
     else toast("Published — students and families can now view these results.");
   };
 
   const doReopen = async () => {
-    if (!structure || !currentUser || !reopenReasonInput.trim()) { toast("A reason is required to reopen a marks workflow.", "warn"); return; }
+    if (!structure || !currentUser || !reopenReasonInput.trim() || workflowBusy) { if (!reopenReasonInput.trim()) toast("A reason is required to reopen a marks workflow.", "warn"); return; }
+    setWorkflowBusy("reopen");
     const errors = await update((d) => {
       const s = ensureSubmission(d, structure.id);
       s.status = "draft";
@@ -245,6 +259,7 @@ export function MarkEntryPage() {
       s.reopenReason = reopenReasonInput.trim();
       pushAudit(d, currentUser, "marks.reopen", `${getSubject(db, structure.subjectId)?.name} · ${getClass(db, structure.classId)?.name}`, reopenReasonInput.trim());
     });
+    setWorkflowBusy(null);
     setReopenOpen(false);
     setReopenReasonInput("");
     if (errors.length) toast(describeSyncErrors(errors), "warn");
@@ -370,20 +385,20 @@ export function MarkEntryPage() {
               <div className="flex flex-wrap items-center gap-2 border-b border-mist bg-paper/70 px-4 py-3 sm:px-5">
                 <div className="flex flex-wrap items-center gap-2">
                   {canEdit && canEnter && (
-                    <Btn size="sm" onClick={() => setConfirmSubmit(true)}><Send className="h-3.5 w-3.5" /> Submit for review</Btn>
+                    <Btn size="sm" disabled={!!workflowBusy} onClick={() => setConfirmSubmit(true)}><Send className="h-3.5 w-3.5" /> Submit for review</Btn>
                   )}
 
                   {status === "submitted" && canApprove && (
                     <>
-                      <Btn size="sm" variant="gold" onClick={doApprove}><CheckCheck className="h-3.5 w-3.5" /> Approve</Btn>
-                      <Btn size="sm" variant="dangerSoft" onClick={() => setReturnOpen(true)}><Undo2 className="h-3.5 w-3.5" /> Return for correction</Btn>
+                      <Btn size="sm" variant="gold" busy={workflowBusy === "approve"} disabled={!!workflowBusy} onClick={doApprove}><CheckCheck className="h-3.5 w-3.5" /> Approve</Btn>
+                      <Btn size="sm" variant="dangerSoft" disabled={!!workflowBusy} onClick={() => setReturnOpen(true)}><Undo2 className="h-3.5 w-3.5" /> Return for correction</Btn>
                     </>
                   )}
                   {status === "approved" && canPublish && (
-                    <Btn size="sm" variant="solid" onClick={() => setConfirmPublish(true)}><Globe2 className="h-3.5 w-3.5" /> Publish results</Btn>
+                    <Btn size="sm" variant="solid" disabled={!!workflowBusy} onClick={() => setConfirmPublish(true)}><Globe2 className="h-3.5 w-3.5" /> Publish results</Btn>
                   )}
                   {(status === "approved" || status === "published") && canReopen && (
-                    <Btn size="sm" variant="ghost" onClick={() => setReopenOpen(true)}><RotateCcw className="h-3.5 w-3.5" /> Reopen</Btn>
+                    <Btn size="sm" variant="ghost" disabled={!!workflowBusy} onClick={() => setReopenOpen(true)}><RotateCcw className="h-3.5 w-3.5" /> Reopen</Btn>
                   )}
                 </div>
                 {!canEdit && (
@@ -460,8 +475,8 @@ export function MarkEntryPage() {
       {editStruct && <StructureModal existing={editStruct === "new" ? undefined : editStruct} onClose={() => setEditStruct(null)} />}
 
       {structure && confirmSubmit && (
-        <Modal title="Submit marks for review" kicker={`${getSubject(db, structure.subjectId)?.name} · ${getClass(db, structure.classId)?.name} · ${structure.period}`} onClose={() => setConfirmSubmit(false)}
-          footer={<><Btn variant="ghost" onClick={() => setConfirmSubmit(false)}>Cancel</Btn><Btn onClick={doSubmit}><Send className="h-4 w-4" /> Submit</Btn></>}>
+        <Modal title="Submit marks for review" kicker={`${getSubject(db, structure.subjectId)?.name} · ${getClass(db, structure.classId)?.name} · ${structure.period}`} onClose={() => !workflowBusy && setConfirmSubmit(false)}
+          footer={<><Btn variant="ghost" disabled={!!workflowBusy} onClick={() => setConfirmSubmit(false)}>Cancel</Btn><Btn busy={workflowBusy === "submit"} onClick={doSubmit}><Send className="h-4 w-4" /> Submit</Btn></>}>
           <p className="text-[13px] leading-relaxed text-ink">
             You are about to submit marks for <strong>{getClass(db, structure.classId)?.name}</strong> — <strong>{getSubject(db, structure.subjectId)?.name}</strong> — <strong>{structure.period}</strong>.
           </p>
@@ -473,8 +488,8 @@ export function MarkEntryPage() {
       )}
 
       {structure && returnOpen && (
-        <Modal title="Return for correction" kicker="A reason is required" onClose={() => setReturnOpen(false)}
-          footer={<><Btn variant="ghost" onClick={() => setReturnOpen(false)}>Cancel</Btn><Btn variant="danger" onClick={doReturn}><Undo2 className="h-4 w-4" /> Return marks</Btn></>}>
+        <Modal title="Return for correction" kicker="A reason is required" onClose={() => !workflowBusy && setReturnOpen(false)}
+          footer={<><Btn variant="ghost" disabled={!!workflowBusy} onClick={() => setReturnOpen(false)}>Cancel</Btn><Btn variant="danger" busy={workflowBusy === "return"} onClick={doReturn}><Undo2 className="h-4 w-4" /> Return marks</Btn></>}>
           <Field label="Reason" required>
             <TextArea value={returnReason} onChange={(e) => setReturnReason(e.target.value)} placeholder="e.g. Please verify Abebe's mark — the attendance register shows he was absent." />
           </Field>
@@ -483,8 +498,8 @@ export function MarkEntryPage() {
       )}
 
       {structure && reopenOpen && (
-        <Modal title="Reopen marks workflow" kicker="Super-admin only — a reason is required" onClose={() => setReopenOpen(false)}
-          footer={<><Btn variant="ghost" onClick={() => setReopenOpen(false)}>Cancel</Btn><Btn variant="danger" onClick={doReopen}><RotateCcw className="h-4 w-4" /> Reopen</Btn></>}>
+        <Modal title="Reopen marks workflow" kicker="Super-admin only — a reason is required" onClose={() => !workflowBusy && setReopenOpen(false)}
+          footer={<><Btn variant="ghost" disabled={!!workflowBusy} onClick={() => setReopenOpen(false)}>Cancel</Btn><Btn variant="danger" busy={workflowBusy === "reopen"} onClick={doReopen}><RotateCcw className="h-4 w-4" /> Reopen</Btn></>}>
           <Field label="Reason" required>
             <TextArea value={reopenReasonInput} onChange={(e) => setReopenReasonInput(e.target.value)} placeholder="e.g. Correcting a transcription error found after publishing." />
           </Field>
@@ -493,8 +508,8 @@ export function MarkEntryPage() {
       )}
 
       {structure && confirmPublish && (
-        <Modal title="Publish results" kicker={`${getSubject(db, structure.subjectId)?.name} · ${getClass(db, structure.classId)?.name}`} onClose={() => setConfirmPublish(false)}
-          footer={<><Btn variant="ghost" onClick={() => setConfirmPublish(false)}>Cancel</Btn><Btn variant="gold" onClick={doPublish}><Globe2 className="h-4 w-4" /> Publish</Btn></>}>
+        <Modal title="Publish results" kicker={`${getSubject(db, structure.subjectId)?.name} · ${getClass(db, structure.classId)?.name}`} onClose={() => !workflowBusy && setConfirmPublish(false)}
+          footer={<><Btn variant="ghost" disabled={!!workflowBusy} onClick={() => setConfirmPublish(false)}>Cancel</Btn><Btn variant="gold" busy={workflowBusy === "publish"} onClick={doPublish}><Globe2 className="h-4 w-4" /> Publish</Btn></>}>
           <p className="text-[13px] leading-relaxed text-ink">Publishing makes these results visible to the students of <strong>{getClass(db, structure.classId)?.name}</strong> and their families.</p>
           <p className="mt-2 rounded-lg bg-paper px-3 py-2.5 text-[12.5px] text-soft">This is recorded in the audit log. You can reopen later if a correction is needed.</p>
         </Modal>

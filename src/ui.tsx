@@ -23,13 +23,21 @@ export function Btn({
   variant = "solid",
   size = "md",
   className = "",
+  busy = false,
+  disabled,
+  children,
   ...props
-}: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: keyof typeof btnVariants; size?: keyof typeof btnSizes }) {
+}: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: keyof typeof btnVariants; size?: keyof typeof btnSizes; busy?: boolean }) {
   return (
     <button
-      className={`inline-flex items-center justify-center rounded-lg font-semibold tracking-tight transition-all duration-150 disabled:opacity-45 disabled:pointer-events-none cursor-pointer whitespace-nowrap ${btnVariants[variant]} ${btnSizes[size]} ${className}`}
+      className={`relative inline-flex items-center justify-center rounded-lg font-semibold tracking-tight transition-all duration-150 disabled:opacity-45 disabled:pointer-events-none cursor-pointer whitespace-nowrap ${btnVariants[variant]} ${btnSizes[size]} ${className}`}
+      disabled={disabled || busy}
+      aria-busy={busy}
       {...props}
-    />
+    >
+      {busy && <span className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent opacity-80" />}
+      <span className={busy ? "opacity-80" : ""}>{children}</span>
+    </button>
   );
 }
 

@@ -572,19 +572,6 @@ async function doSync(oldDB: DB, newDB: DB, errors: string[]): Promise<void> {
     }
   }
 
-  // assessment submission workflow (one row per structure): submit/approve/return/publish state
-  {
-    const { up, del } = diff(o.mark_submissions ?? [], n.mark_submissions ?? []);
-    if (up.length) await upsert("mark_submissions", up.map((s) => ({
-      id: s.id, structure_id: s.structureId, status: s.status,
-      submitted_by: s.submittedBy, submitted_at: s.submittedAt,
-      approved_by: s.approvedBy, approved_at: s.approvedAt,
-      returned_by: s.returnedBy, returned_at: s.returnedAt, return_reason: s.returnReason,
-      published_by: s.publishedBy, published_at: s.publishedAt, reopen_reason: s.reopenReason ?? null,
-    })), "structure_id", errors);
-    if (del.length) await remove("mark_submissions", del.map((s) => s.id), errors);
-  }
-
   // attendance registers + entries (replace-per-register)
   {
     const regRows = newDB.attendance.map((r) => ({ id: regId(r), day: r.date, class_id: r.classId, section_id: r.sectionId, recorded_by: currentProfileId() }));
