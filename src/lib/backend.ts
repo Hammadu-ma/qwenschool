@@ -43,6 +43,12 @@ export type DbMode = "live" | "local" | "off";
  * decision (live / local / off) within a bounded time.
  */
 const NETWORK_TIMEOUT_MS = 10_000;
+// The schema probe gets extra headroom: a free-tier Supabase project that's
+// been idle auto-pauses and can take several seconds to spin back up on the
+// very first request. 10s was sometimes not enough for that cold start
+// alone, which was tipping a perfectly fine, fully-migrated project into
+// the "missing" fallback below.
+const SCHEMA_PROBE_TIMEOUT_MS = 20_000;
 
 class BackendTimeoutError extends Error {
   constructor(label: string, ms: number) {
@@ -62,28 +68,37 @@ function withTimeout<T>(promise: PromiseLike<T>, label: string, ms = NETWORK_TIM
 }
 
 /**
- * Probe the remote schema without writing anything. Distinguishes:
- *   live    — tables exist (data may be empty)
- *   missing — reachable project, migrations not applied (PGRST205 / 42P01) —
- *             also used when the probe times out, since either way the
- *             right move is the same: fall back to the offline demo seed
- *             instead of hanging, and let the user retry via "Reconnect".
- *   off     — client not configured
+ * Probe the remote schema without writing anything. Three-way result:
+ *   live        — tables exist (data may be empty)
+ *   missing     — reachable project, CONFIRMED no migrations applied
+ *                 (PGRST205 / 42P01 / "does not exist"). Only this shows
+ *                 the "connect the live database / apply migrations" setup
+ *                 wizard — it should never fire for a project that's
+ *                 actually fine.
+ *   unreachable — couldn't get a clean answer either way (timeout, a
+ *                 transient network error, a permission error unrelated to
+ *                 the schema, a cold-starting project that didn't respond
+ *                 in time…). Falls back to the same offline demo seed as
+ *                 "missing" so the UI never hangs, but WITHOUT showing the
+ *                 migrations wizard — telling someone to re-run migrations
+ *                 they already ran, because of an unrelated hiccup, is
+ *                 actively misleading.
+ *   off         — client not configured
  */
-export async function checkSchema(): Promise<DbMode | "missing"> {
+export async function checkSchema(): Promise<DbMode | "missing" | "unreachable"> {
   if (!isSupabaseConfigured) return "off";
   try {
-    const { error } = await withTimeout(sb()!.from("schools").select("id").limit(1), "schema probe");
+    const { error } = await withTimeout(sb()!.from("schools").select("id").limit(1), "schema probe", SCHEMA_PROBE_TIMEOUT_MS);
     if (!error) return "live";
     const code = (error as { code?: string }).code ?? "";
     const msg = error.message ?? "";
     if (code === "PGRST205" || code === "42P01" || /does not exist|Could not find the table/i.test(msg)) return "missing";
-    console.warn("[backend] schema probe failed:", msg);
-    return "missing";
+    console.warn("[backend] schema probe returned an unexpected error — treating as a connection issue, not a missing schema:", msg);
+    return "unreachable";
   } catch (e) {
     const detail = e instanceof BackendTimeoutError ? e.message : String((e as Error)?.message ?? e);
-    console.warn("[backend] schema probe did not complete — falling back to offline demo mode:", detail);
-    return "missing";
+    console.warn("[backend] schema probe did not complete in time — treating as a connection issue, not a missing schema:", detail);
+    return "unreachable";
   }
 }
 
@@ -281,6 +296,7 @@ export async function hydrateCore(): Promise<{ db: DB; mode: DbMode; schemaMissi
 
   const probe = await checkSchema();
   if (probe === "off") return { db: seed, mode: "off", schemaMissing: false };
+  if (probe === "unreachable") return { db: seed, mode: "local", schemaMissing: false };
   if (probe === "missing") return { db: seed, mode: "local", schemaMissing: true };
 
   const [

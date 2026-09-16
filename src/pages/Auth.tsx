@@ -4,7 +4,7 @@ import { GraduationCap, Lock, LogIn, ShieldAlert, ShieldCheck, Eye, EyeOff, Arro
 import { homePathFor, useApp } from "../store";
 import { Btn, Chip, RoleBadge } from "../ui";
 import type { Role } from "../types";
-import { applyMigrations } from "../lib/backend";
+import { applyMigrations, type DbMode } from "../lib/backend";
 import { MIGRATIONS, COMBINED_SQL, sqlEditorUrl, PROJECT_REF } from "../lib/migrations";
 
 const DEMO: { role: Role; label: string; name: string; username: string; password: string; icon: React.ReactNode; desc: string }[] = [
@@ -182,8 +182,45 @@ function SetupConsole({ onConnected }: { onConnected: () => void }) {
   );
 }
 
+/**
+ * Shown instead of the full migrations wizard when the app is in local/demo
+ * mode for a reason OTHER than a confirmed missing schema — an unreachable
+ * project, a timeout, a cold-starting free-tier instance that didn't answer
+ * in time. Telling someone to paste a service key and run migrations they
+ * already ran, because of an unrelated network hiccup, is actively
+ * misleading — so this stays a single honest line with a retry button
+ * instead. If a retry ever comes back "actually missing", the parent's
+ * `schemaMissing` flips true and the real wizard takes over on its own.
+ */
+function ConnectionNotice({ reconnect, onConnected }: { reconnect: () => Promise<DbMode | "missing">; onConnected: () => void }) {
+  const { toast } = useApp();
+  const [checking, setChecking] = useState(false);
+  const [tried, setTried] = useState(false);
+
+  const retry = async () => {
+    setChecking(true);
+    const res = await reconnect();
+    setChecking(false);
+    setTried(true);
+    if (res === "live") { toast("Connected to Supabase — live mode.", "ok"); onConnected(); }
+  };
+
+  return (
+    <div className="anim-rise mt-5 flex items-center gap-3 rounded-xl border border-gold-300 bg-gold-50 px-4 py-3">
+      <Database className="h-4 w-4 shrink-0 text-gold-700" />
+      <p className="flex-1 text-[12px] text-ink">
+        Couldn't reach the live database{tried ? " — still no luck" : ""}, so you're looking at demo data for now.
+      </p>
+      <Btn variant="ghost" size="sm" onClick={retry} disabled={checking}>
+        {checking ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+        Retry
+      </Btn>
+    </div>
+  );
+}
+
 export function LoginPage() {
-  const { db, login, toast, mode } = useApp();
+  const { db, login, toast, mode, schemaMissing, reconnect } = useApp();
   const nav = useNavigate();
   const [connected, setConnected] = useState(false);
   const [username, setUsername] = useState("");
@@ -286,7 +323,8 @@ export function LoginPage() {
           <h2 className="font-display mt-1 text-[28px] font-extrabold tracking-tight text-ink">Who's signing in today?</h2>
           <p className="mt-1 text-[13px] text-soft">Your role and relationships load automatically after authentication.</p>
 
-          {mode !== "live" && !connected && <div className="mt-5"><SetupConsole onConnected={() => setConnected(true)} /></div>}
+          {schemaMissing && !connected && <div className="mt-5"><SetupConsole onConnected={() => setConnected(true)} /></div>}
+          {mode === "local" && !schemaMissing && !connected && <ConnectionNotice reconnect={reconnect} onConnected={() => setConnected(true)} />}
 
           <form key={shake} onSubmit={submit} className={`mt-6 space-y-4 ${shake ? "anim-shake" : ""}`}>
             <div>
