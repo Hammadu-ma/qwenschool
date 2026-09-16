@@ -337,6 +337,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
    * just becomes current a moment later. */
   useEffect(() => {
     let mounted = true;
+    let backgroundTimer: number | undefined;
+    let backgroundIdle = false;
     (async () => {
       if (isSupabaseConfigured && supabase) {
         const { data } = await supabase.auth.getSession();
@@ -350,17 +352,50 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       if (cached) setReady(true); // we already know what to show — no spinner
 
-      const { db: loaded, mode: m, schemaMissing: missing } = await hydrate();
+      // Fast boot: only fetch the identity + core academic data needed to
+      // render the first screen. Everything else is fetched after first paint.
+      const { db: loaded, mode: m, schemaMissing: missing } = await hydrate({ fast: true });
       if (!mounted) return;
       dbRef.current = loaded;
       setDb(loaded);
       setMode(m);
       setSchemaMissing(missing);
       setYearId(loaded.years.find((y) => y.active)?.id ?? loaded.years[0]?.id ?? "");
-      if (m === "live") saveCachedDb(loaded); else clearCachedDb();
       setReady(true);
+
+      // Do NOT immediately start another large request. Let the first screen
+      // render and then fetch the complete snapshot during browser idle time.
+      // This prevents login/navigation from competing with the initial data
+      // request and makes the app feel immediate on cold starts.
+      if (m === "live") {
+        const runBackground = async () => {
+          const background = await hydrate();
+          if (!mounted) return;
+          dbRef.current = background.db;
+          setDb(background.db);
+          setMode(background.mode);
+          setSchemaMissing(background.schemaMissing);
+          setYearId(background.db.years.find((y) => y.active)?.id ?? background.db.years[0]?.id ?? "");
+          if (background.mode === "live") saveCachedDb(background.db);
+        };
+        const idle = (window as any).requestIdleCallback as ((cb: () => void, opts?: { timeout: number }) => number) | undefined;
+        if (idle) {
+          backgroundIdle = true;
+          backgroundTimer = idle(() => void runBackground(), { timeout: 5000 });
+        } else {
+          backgroundTimer = window.setTimeout(() => void runBackground(), 1800);
+        }
+      } else {
+        clearCachedDb();
+      }
     })();
-    return () => { mounted = false; };
+    return () => {
+      mounted = false;
+      if (backgroundTimer !== undefined) {
+        if (backgroundIdle) (window as any).cancelIdleCallback?.(backgroundTimer);
+        else window.clearTimeout(backgroundTimer);
+      }
+    };
   }, []);
 
   /** Re-probe and re-hydrate — used by the setup console after migrations land. */
@@ -441,6 +476,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (profile) {
       if (profile.status !== "active") { await supabase.auth.signOut(); setSessionUserId(null); setProfileId(null); return { ok: false, error: "This account has been disabled. Contact the administrator." }; }
       update((d) => { d.users = [...d.users.filter((u) => u.id !== profile.id), profile]; });
+      // After authentication, fetch the small one-request bootstrap so the
+      // first dashboard is real Supabase data, not the bundled seed/cache.
+      const { db: loaded, mode: loadedMode, schemaMissing: loadedMissing } = await hydrate({ fast: true });
+      dbRef.current = loaded;
+      setDb(loaded);
+      setMode(loadedMode);
+      setSchemaMissing(loadedMissing);
+      setYearId(loaded.years.find((y) => y.active)?.id ?? loaded.years[0]?.id ?? "");
+      setReady(true);
       return { ok: true, user: profile };
     }
     return { ok: true };

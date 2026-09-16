@@ -98,33 +98,65 @@ async function sel<T = any>(table: string, select = "*"): Promise<T[] | null> {
   return (data as T[]) ?? [];
 }
 
-export async function hydrate(): Promise<{ db: DB; mode: DbMode; schemaMissing: boolean }> {
-  const seed = buildSeed();
-  const probe = await checkSchema();
-  if (probe === "off") return { db: seed, mode: "off", schemaMissing: false };
-  if (probe === "missing") return { db: seed, mode: "local", schemaMissing: true };
+/**
+ * One-request bootstrap/snapshot loaders. The SQL functions are SECURITY
+ * INVOKER, so the existing table RLS remains the authorization boundary.
+ */
+async function rpcRows(name: "get_app_bootstrap" | "get_app_snapshot"): Promise<Record<string, any[]> | null> {
+  if (!isSupabaseConfigured) return null;
+  const { data, error } = await sb()!.rpc(name);
+  if (error) {
+    console.warn(`[backend] ${name} failed:`, error.message);
+    return null;
+  }
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  return data as Record<string, any[]>;
+}
 
-  // Parallel reads; any table that fails (e.g. migration not yet applied)
-  // falls back to the seed so the UI still renders — loudly, not silently.
-  const [
+function rowsFromRpc(r: Record<string, any[]>) {
+  return {
+    schools: r.schools ?? [], years: r.academic_years ?? [], terms: r.terms ?? [],
+    classes: r.classes ?? [], sections: r.sections ?? [], subjects: r.subjects ?? [],
+    teachers: r.teachers ?? [], assignments: r.teacher_assignments ?? [],
+    students: r.students ?? [], enrollments: r.enrollments ?? [],
+    documents: r.student_documents ?? [], structures: r.assessment_structures ?? [],
+    items: r.assessment_items ?? [], marks: r.assessment_marks ?? [],
+    submissions: r.mark_submissions ?? [], gradeBands: r.grade_bands ?? [],
+    registers: r.attendance_registers ?? [], entries: r.attendance_entries ?? [],
+    fees: r.fee_items ?? [], homework: r.homework ?? [], timetable: r.timetable_entries ?? [],
+    roleDefs: r.role_defs ?? [], rolePerms: r.role_permissions ?? [],
+    profiles: r.profiles ?? [], guardianStudents: r.guardian_students ?? [],
+    announcements: r.announcements ?? [], announcementReads: r.announcement_reads ?? [],
+    conversations: r.conversations ?? [], participants: r.conversation_participants ?? [],
+    messages: r.messages ?? [], notifications: r.notifications ?? [], events: r.events ?? [],
+    audit: r.audit_log ?? [], reports: r.message_reports ?? [],
+  };
+}
+
+export async function hydrate(options: { fast?: boolean } = {}): Promise<{ db: DB; mode: DbMode; schemaMissing: boolean }> {
+  const fast = options.fast === true;
+  const seed = buildSeed();
+  if (!isSupabaseConfigured) return { db: seed, mode: "off", schemaMissing: false };
+
+  // The RPC itself is also our schema probe. This removes the old extra
+  // "select schools" request from every application start.
+  const remoteRows = await rpcRows(fast ? "get_app_bootstrap" : "get_app_snapshot");
+  if (!remoteRows) {
+    // Preserve the old setup/offline behavior. A failed RPC may simply mean
+    // the new migration has not been installed yet.
+    const probe = await checkSchema();
+    if (probe === "missing") return { db: seed, mode: "local", schemaMissing: true };
+    return { db: seed, mode: "local", schemaMissing: false };
+  }
+
+  const {
     schools, years, terms, classes, sections, subjects, teachers, assignments,
     students, enrollments, documents, structures, items, marks, submissions,
     gradeBands, registers, entries, fees, homework, timetable,
     roleDefs, rolePerms, profiles, guardianStudents,
     announcements, announcementReads, conversations, participants,
     messages, notifications, events, audit, reports,
-  ] = await Promise.all([
-    sel("schools"), sel("academic_years"), sel("terms"), sel("classes"), sel("sections"),
-    sel("subjects"), sel("teachers"), sel("teacher_assignments"),
-    sel("students"), sel("enrollments"), sel("student_documents"),
-    sel("assessment_structures"), sel("assessment_items"), sel("assessment_marks"),
-    sel("mark_submissions"), sel("grade_bands"), sel("attendance_registers"),
-    sel("attendance_entries"), sel("fee_items"), sel("homework"), sel("timetable_entries"),
-    sel("role_defs"), sel("role_permissions"), sel("profiles"), sel("guardian_students"),
-    sel("announcements"), sel("announcement_reads"), sel("conversations"),
-    sel("conversation_participants"), sel("messages"), sel("notifications"),
-    sel("events"), sel("audit_log"), sel("message_reports"),
-  ]);
+  } = rowsFromRpc(remoteRows);
 
   const db: DB = seed;
   let remote = false;
