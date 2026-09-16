@@ -17,6 +17,7 @@ import {
 } from "../ui";
 import { AccessDenied } from "./Auth";
 import { defaultRoleIdFor, hasPermission, pushAudit } from "../rbac";
+import { ChunkErrorBoundary } from "../lib/ChunkErrorBoundary";
 // Split into their own chunk — the registration wizard (PDF export, ID card
 // rendering) is only needed once someone actually opens one of these modals,
 // not on every visit to the students directory.
@@ -151,7 +152,7 @@ export function StudentsPage({ scoped }: { scoped?: boolean }) {
         )}
       </Panel>
 
-      {regOpen && <Suspense fallback={<ModalLoading onClose={() => setRegOpen(false)} />}><RegistrationWizard onClose={() => setRegOpen(false)} onSaved={(id) => nav(`/admin/students/${id}`)} /></Suspense>}
+      {regOpen && <ChunkErrorBoundary><Suspense fallback={<ModalLoading onClose={() => setRegOpen(false)} />}><RegistrationWizard onClose={() => setRegOpen(false)} onSaved={(id) => nav(`/admin/students/${id}`)} /></Suspense></ChunkErrorBoundary>}
     </div>
   );
 }
@@ -572,8 +573,8 @@ export function StudentProfilePage() {
         )}
       </div>
 
-      {editOpen && isAdmin && <Suspense fallback={<ModalLoading onClose={() => setEditOpen(false)} />}><RegistrationWizard student={s} onClose={() => setEditOpen(false)} /></Suspense>}
-      {idCardOpen && <Suspense fallback={<ModalLoading onClose={() => setIdCardOpen(false)} />}><IDCardModal student={s} onClose={() => setIdCardOpen(false)} /></Suspense>}
+      {editOpen && isAdmin && <ChunkErrorBoundary><Suspense fallback={<ModalLoading onClose={() => setEditOpen(false)} />}><RegistrationWizard student={s} onClose={() => setEditOpen(false)} /></Suspense></ChunkErrorBoundary>}
+      {idCardOpen && <ChunkErrorBoundary><Suspense fallback={<ModalLoading onClose={() => setIdCardOpen(false)} />}><IDCardModal student={s} onClose={() => setIdCardOpen(false)} /></Suspense></ChunkErrorBoundary>}
     </div>
   );
 }

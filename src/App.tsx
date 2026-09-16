@@ -1,10 +1,11 @@
-import { lazy, Suspense, type ReactNode } from "react";
-import { HashRouter, Navigate, Route, Routes } from "react-router-dom";
+import { lazy, Suspense, useEffect, type ReactNode } from "react";
+import { HashRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { Compass } from "lucide-react";
 import { AppProvider, homePathFor, useApp } from "./store";
 import type { Role } from "./types";
 import { AppShell } from "./Layout";
 import { AccessDenied, LoginPage } from "./pages/Auth";
+import { ChunkErrorBoundary, clearChunkReloadGuard } from "./lib/ChunkErrorBoundary";
 
 /* =========================================================================
    Route-level code splitting. Each pages/*.tsx module becomes its own chunk
@@ -60,6 +61,25 @@ function RouteFallback() {
   );
 }
 
+/** One boundary + fallback pair per lazy route, keyed to the current path so
+ *  a failure on one page doesn't linger once the person navigates away. */
+function LazyRoute({ children }: { children: ReactNode }) {
+  const { pathname } = useLocation();
+  return (
+    <ChunkErrorBoundary resetKey={pathname}>
+      <Suspense fallback={<RouteFallback />}>{children}</Suspense>
+    </ChunkErrorBoundary>
+  );
+}
+
+// Successfully rendering anything at all means the current chunk set is
+// good — clear the one-time reload guard so a *future* stale-chunk error
+// (after the next deploy) is still allowed to trigger one reload.
+function ChunkReloadGuardReset() {
+  useEffect(() => { clearChunkReloadGuard(); }, []);
+  return null;
+}
+
 /** Route-level authorization: checks the signed-in role, blocks everything else. */
 function Guard({ roles, required, children }: { roles: Role[]; required?: string; children: ReactNode }) {
   const { currentUser } = useApp();
@@ -93,6 +113,7 @@ function NotFound() {
 export default function App() {
   return (
     <AppProvider>
+      <ChunkReloadGuardReset />
       <HashRouter>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
@@ -100,62 +121,62 @@ export default function App() {
 
           <Route element={<AppShell />}>
             {/* shared across all authenticated roles — communication (relationship-checked inside) */}
-            <Route path="/announcements" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><Suspense fallback={<RouteFallback />}><AnnouncementsPage /></Suspense></Guard>} />
-            <Route path="/messages" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><Suspense fallback={<RouteFallback />}><MessagesPage /></Suspense></Guard>} />
-            <Route path="/messages/:id" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><Suspense fallback={<RouteFallback />}><MessagesPage /></Suspense></Guard>} />
-            <Route path="/notifications" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><Suspense fallback={<RouteFallback />}><NotificationsPage /></Suspense></Guard>} />
-            <Route path="/events" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><Suspense fallback={<RouteFallback />}><EventsPage /></Suspense></Guard>} />
-            <Route path="/contacts" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><Suspense fallback={<RouteFallback />}><ContactsPage /></Suspense></Guard>} />
-            <Route path="/moderation" element={<Guard roles={["admin"]} required="Moderator"><Suspense fallback={<RouteFallback />}><ModerationPage /></Suspense></Guard>} />
-            <Route path="/profile" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><Suspense fallback={<RouteFallback />}><ProfilePage /></Suspense></Guard>} />
+            <Route path="/announcements" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><LazyRoute><AnnouncementsPage /></LazyRoute></Guard>} />
+            <Route path="/messages" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><LazyRoute><MessagesPage /></LazyRoute></Guard>} />
+            <Route path="/messages/:id" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><LazyRoute><MessagesPage /></LazyRoute></Guard>} />
+            <Route path="/notifications" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><LazyRoute><NotificationsPage /></LazyRoute></Guard>} />
+            <Route path="/events" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><LazyRoute><EventsPage /></LazyRoute></Guard>} />
+            <Route path="/contacts" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><LazyRoute><ContactsPage /></LazyRoute></Guard>} />
+            <Route path="/moderation" element={<Guard roles={["admin"]} required="Moderator"><LazyRoute><ModerationPage /></LazyRoute></Guard>} />
+            <Route path="/profile" element={<Guard roles={["admin", "teacher", "student", "guardian"]} required="Any signed-in user"><LazyRoute><ProfilePage /></LazyRoute></Guard>} />
 
             {/* system administration — permission-checked inside as well */}
-            <Route path="/admin/roles" element={<Guard roles={["admin"]} required="Super Admin"><Suspense fallback={<RouteFallback />}><RolesPage /></Suspense></Guard>} />
-            <Route path="/admin/audit" element={<Guard roles={["admin"]} required="Administrator"><Suspense fallback={<RouteFallback />}><AuditPage /></Suspense></Guard>} />
+            <Route path="/admin/roles" element={<Guard roles={["admin"]} required="Super Admin"><LazyRoute><RolesPage /></LazyRoute></Guard>} />
+            <Route path="/admin/audit" element={<Guard roles={["admin"]} required="Administrator"><LazyRoute><AuditPage /></LazyRoute></Guard>} />
 
             {/* administrator */}
-            <Route path="/admin/dashboard" element={<Guard roles={["admin"]} required="Administrator"><Suspense fallback={<RouteFallback />}><AdminDashboard /></Suspense></Guard>} />
-            <Route path="/admin/students" element={<Guard roles={["admin"]} required="Administrator"><Suspense fallback={<RouteFallback />}><StudentsPage /></Suspense></Guard>} />
-            <Route path="/admin/students/:id" element={<Guard roles={["admin"]} required="Administrator"><Suspense fallback={<RouteFallback />}><StudentProfilePage /></Suspense></Guard>} />
-            <Route path="/admin/teachers" element={<Guard roles={["admin"]} required="Administrator"><Suspense fallback={<RouteFallback />}><TeachersPage /></Suspense></Guard>} />
-            <Route path="/admin/families" element={<Guard roles={["admin"]} required="Administrator"><Suspense fallback={<RouteFallback />}><FamiliesPage /></Suspense></Guard>} />
-            <Route path="/admin/classes" element={<Guard roles={["admin"]} required="Administrator"><Suspense fallback={<RouteFallback />}><ClassesPage /></Suspense></Guard>} />
-            <Route path="/admin/academic-years" element={<Guard roles={["admin"]} required="Administrator"><Suspense fallback={<RouteFallback />}><AcademicYearsPage /></Suspense></Guard>} />
-            <Route path="/admin/timetable" element={<Guard roles={["admin"]} required="Administrator"><Suspense fallback={<RouteFallback />}><TimetablePage /></Suspense></Guard>} />
-            <Route path="/admin/marks" element={<Guard roles={["admin"]} required="Administrator"><Suspense fallback={<RouteFallback />}><MarkEntryPage /></Suspense></Guard>} />
-            <Route path="/admin/assignments" element={<Guard roles={["admin"]} required="Administrator"><Suspense fallback={<RouteFallback />}><AssignmentsPage /></Suspense></Guard>} />
-            <Route path="/admin/homework" element={<Guard roles={["admin"]} required="Administrator"><Suspense fallback={<RouteFallback />}><HomeworkPage /></Suspense></Guard>} />
-            <Route path="/admin/reports" element={<Guard roles={["admin"]} required="Administrator"><Suspense fallback={<RouteFallback />}><ReportsPage /></Suspense></Guard>} />
-            <Route path="/admin/attendance" element={<Guard roles={["admin"]} required="Administrator"><Suspense fallback={<RouteFallback />}><AttendancePage /></Suspense></Guard>} />
-            <Route path="/admin/fees" element={<Guard roles={["admin"]} required="Administrator"><Suspense fallback={<RouteFallback />}><FeesPage /></Suspense></Guard>} />
-            <Route path="/admin/users" element={<Guard roles={["admin"]} required="Administrator"><Suspense fallback={<RouteFallback />}><UsersPage /></Suspense></Guard>} />
+            <Route path="/admin/dashboard" element={<Guard roles={["admin"]} required="Administrator"><LazyRoute><AdminDashboard /></LazyRoute></Guard>} />
+            <Route path="/admin/students" element={<Guard roles={["admin"]} required="Administrator"><LazyRoute><StudentsPage /></LazyRoute></Guard>} />
+            <Route path="/admin/students/:id" element={<Guard roles={["admin"]} required="Administrator"><LazyRoute><StudentProfilePage /></LazyRoute></Guard>} />
+            <Route path="/admin/teachers" element={<Guard roles={["admin"]} required="Administrator"><LazyRoute><TeachersPage /></LazyRoute></Guard>} />
+            <Route path="/admin/families" element={<Guard roles={["admin"]} required="Administrator"><LazyRoute><FamiliesPage /></LazyRoute></Guard>} />
+            <Route path="/admin/classes" element={<Guard roles={["admin"]} required="Administrator"><LazyRoute><ClassesPage /></LazyRoute></Guard>} />
+            <Route path="/admin/academic-years" element={<Guard roles={["admin"]} required="Administrator"><LazyRoute><AcademicYearsPage /></LazyRoute></Guard>} />
+            <Route path="/admin/timetable" element={<Guard roles={["admin"]} required="Administrator"><LazyRoute><TimetablePage /></LazyRoute></Guard>} />
+            <Route path="/admin/marks" element={<Guard roles={["admin"]} required="Administrator"><LazyRoute><MarkEntryPage /></LazyRoute></Guard>} />
+            <Route path="/admin/assignments" element={<Guard roles={["admin"]} required="Administrator"><LazyRoute><AssignmentsPage /></LazyRoute></Guard>} />
+            <Route path="/admin/homework" element={<Guard roles={["admin"]} required="Administrator"><LazyRoute><HomeworkPage /></LazyRoute></Guard>} />
+            <Route path="/admin/reports" element={<Guard roles={["admin"]} required="Administrator"><LazyRoute><ReportsPage /></LazyRoute></Guard>} />
+            <Route path="/admin/attendance" element={<Guard roles={["admin"]} required="Administrator"><LazyRoute><AttendancePage /></LazyRoute></Guard>} />
+            <Route path="/admin/fees" element={<Guard roles={["admin"]} required="Administrator"><LazyRoute><FeesPage /></LazyRoute></Guard>} />
+            <Route path="/admin/users" element={<Guard roles={["admin"]} required="Administrator"><LazyRoute><UsersPage /></LazyRoute></Guard>} />
 
             {/* teacher — scoped to assigned classes/students inside each page */}
-            <Route path="/teacher/dashboard" element={<Guard roles={["teacher"]} required="Teacher"><Suspense fallback={<RouteFallback />}><TeacherDashboard /></Suspense></Guard>} />
-            <Route path="/teacher/classes" element={<Guard roles={["teacher"]} required="Teacher"><Suspense fallback={<RouteFallback />}><ClassesPage scoped /></Suspense></Guard>} />
-            <Route path="/teacher/students" element={<Guard roles={["teacher"]} required="Teacher"><Suspense fallback={<RouteFallback />}><StudentsPage scoped /></Suspense></Guard>} />
-            <Route path="/teacher/students/:id" element={<Guard roles={["teacher"]} required="Teacher"><Suspense fallback={<RouteFallback />}><StudentProfilePage /></Suspense></Guard>} />
-            <Route path="/teacher/attendance" element={<Guard roles={["teacher"]} required="Teacher"><Suspense fallback={<RouteFallback />}><AttendancePage /></Suspense></Guard>} />
-            <Route path="/teacher/marks" element={<Guard roles={["teacher"]} required="Teacher"><Suspense fallback={<RouteFallback />}><MarkEntryPage /></Suspense></Guard>} />
-            <Route path="/teacher/assignments" element={<Guard roles={["teacher"]} required="Teacher"><Suspense fallback={<RouteFallback />}><AssignmentsPage /></Suspense></Guard>} />
-            <Route path="/teacher/homework" element={<Guard roles={["teacher"]} required="Teacher"><Suspense fallback={<RouteFallback />}><HomeworkPage /></Suspense></Guard>} />
+            <Route path="/teacher/dashboard" element={<Guard roles={["teacher"]} required="Teacher"><LazyRoute><TeacherDashboard /></LazyRoute></Guard>} />
+            <Route path="/teacher/classes" element={<Guard roles={["teacher"]} required="Teacher"><LazyRoute><ClassesPage scoped /></LazyRoute></Guard>} />
+            <Route path="/teacher/students" element={<Guard roles={["teacher"]} required="Teacher"><LazyRoute><StudentsPage scoped /></LazyRoute></Guard>} />
+            <Route path="/teacher/students/:id" element={<Guard roles={["teacher"]} required="Teacher"><LazyRoute><StudentProfilePage /></LazyRoute></Guard>} />
+            <Route path="/teacher/attendance" element={<Guard roles={["teacher"]} required="Teacher"><LazyRoute><AttendancePage /></LazyRoute></Guard>} />
+            <Route path="/teacher/marks" element={<Guard roles={["teacher"]} required="Teacher"><LazyRoute><MarkEntryPage /></LazyRoute></Guard>} />
+            <Route path="/teacher/assignments" element={<Guard roles={["teacher"]} required="Teacher"><LazyRoute><AssignmentsPage /></LazyRoute></Guard>} />
+            <Route path="/teacher/homework" element={<Guard roles={["teacher"]} required="Teacher"><LazyRoute><HomeworkPage /></LazyRoute></Guard>} />
 
             {/* student — own records only */}
-            <Route path="/student/dashboard" element={<Guard roles={["student"]} required="Student"><Suspense fallback={<RouteFallback />}><StudentDashboard /></Suspense></Guard>} />
-            <Route path="/student/classes" element={<Guard roles={["student"]} required="Student"><Suspense fallback={<RouteFallback />}><ClassesPage scoped /></Suspense></Guard>} />
-            <Route path="/student/grades" element={<Guard roles={["student"]} required="Student"><Suspense fallback={<RouteFallback />}><ReportsPage /></Suspense></Guard>} />
-            <Route path="/student/attendance" element={<Guard roles={["student"]} required="Student"><Suspense fallback={<RouteFallback />}><AttendancePage /></Suspense></Guard>} />
-            <Route path="/student/assignments" element={<Guard roles={["student"]} required="Student"><Suspense fallback={<RouteFallback />}><AssignmentsPage /></Suspense></Guard>} />
-            <Route path="/student/homework" element={<Guard roles={["student"]} required="Student"><Suspense fallback={<RouteFallback />}><HomeworkPage /></Suspense></Guard>} />
+            <Route path="/student/dashboard" element={<Guard roles={["student"]} required="Student"><LazyRoute><StudentDashboard /></LazyRoute></Guard>} />
+            <Route path="/student/classes" element={<Guard roles={["student"]} required="Student"><LazyRoute><ClassesPage scoped /></LazyRoute></Guard>} />
+            <Route path="/student/grades" element={<Guard roles={["student"]} required="Student"><LazyRoute><ReportsPage /></LazyRoute></Guard>} />
+            <Route path="/student/attendance" element={<Guard roles={["student"]} required="Student"><LazyRoute><AttendancePage /></LazyRoute></Guard>} />
+            <Route path="/student/assignments" element={<Guard roles={["student"]} required="Student"><LazyRoute><AssignmentsPage /></LazyRoute></Guard>} />
+            <Route path="/student/homework" element={<Guard roles={["student"]} required="Student"><LazyRoute><HomeworkPage /></LazyRoute></Guard>} />
 
             {/* guardian — registered children only */}
-            <Route path="/guardian/dashboard" element={<Guard roles={["guardian"]} required="Guardian"><Suspense fallback={<RouteFallback />}><GuardianDashboard /></Suspense></Guard>} />
-            <Route path="/guardian/children" element={<Guard roles={["guardian"]} required="Guardian"><Suspense fallback={<RouteFallback />}><StudentsPage scoped /></Suspense></Guard>} />
-            <Route path="/guardian/children/:id" element={<Guard roles={["guardian"]} required="Guardian"><Suspense fallback={<RouteFallback />}><StudentProfilePage /></Suspense></Guard>} />
-            <Route path="/guardian/grades" element={<Guard roles={["guardian"]} required="Guardian"><Suspense fallback={<RouteFallback />}><ReportsPage /></Suspense></Guard>} />
-            <Route path="/guardian/attendance" element={<Guard roles={["guardian"]} required="Guardian"><Suspense fallback={<RouteFallback />}><AttendancePage /></Suspense></Guard>} />
-            <Route path="/guardian/assignments" element={<Guard roles={["guardian"]} required="Guardian"><Suspense fallback={<RouteFallback />}><AssignmentsPage /></Suspense></Guard>} />
-            <Route path="/guardian/homework" element={<Guard roles={["guardian"]} required="Guardian"><Suspense fallback={<RouteFallback />}><HomeworkPage /></Suspense></Guard>} />
+            <Route path="/guardian/dashboard" element={<Guard roles={["guardian"]} required="Guardian"><LazyRoute><GuardianDashboard /></LazyRoute></Guard>} />
+            <Route path="/guardian/children" element={<Guard roles={["guardian"]} required="Guardian"><LazyRoute><StudentsPage scoped /></LazyRoute></Guard>} />
+            <Route path="/guardian/children/:id" element={<Guard roles={["guardian"]} required="Guardian"><LazyRoute><StudentProfilePage /></LazyRoute></Guard>} />
+            <Route path="/guardian/grades" element={<Guard roles={["guardian"]} required="Guardian"><LazyRoute><ReportsPage /></LazyRoute></Guard>} />
+            <Route path="/guardian/attendance" element={<Guard roles={["guardian"]} required="Guardian"><LazyRoute><AttendancePage /></LazyRoute></Guard>} />
+            <Route path="/guardian/assignments" element={<Guard roles={["guardian"]} required="Guardian"><LazyRoute><AssignmentsPage /></LazyRoute></Guard>} />
+            <Route path="/guardian/homework" element={<Guard roles={["guardian"]} required="Guardian"><LazyRoute><HomeworkPage /></LazyRoute></Guard>} />
 
             <Route path="*" element={<NotFound />} />
           </Route>
