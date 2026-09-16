@@ -184,6 +184,16 @@ export function Ring({ pct, size = 54, stroke = 5, color = "var(--color-pine-600
 
 const avatarColors = ["#2c654c", "#3a6b8c", "#96543f", "#55618f", "#337a77", "#b07e24", "#557d3b", "#8a3325"];
 export function Avatar({ student, size = 36, className = "" }: { student: Student; size?: number; className?: string }) {
+  if (student.photo) {
+    return (
+      <img
+        src={student.photo}
+        alt=""
+        className={`inline-block shrink-0 rounded-full object-cover ring-2 ring-white/70 ${className}`}
+        style={{ width: size, height: size }}
+      />
+    );
+  }
   const color = avatarColors[(student.id.charCodeAt(2) || 0) % avatarColors.length];
   return (
     <span
