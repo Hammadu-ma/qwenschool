@@ -7,6 +7,7 @@ import {
   AlertTriangle, Check, ChevronDown, User, BookOpen, Baby, PenLine,
 } from "lucide-react";
 import { homePathFor, useApp } from "./store";
+import type { DataKey } from "./lib/backend";
 import { hasPermission, totalUnreadMessages, unreadNotifications } from "./rbac";
 import { Chip, RoleBadge, UserAvatar } from "./ui";
 import type { Role } from "./types";
@@ -130,6 +131,38 @@ function Clock() {
       </p>
     </div>
   );
+}
+
+const ROUTE_DATA: Array<[RegExp, DataKey[]]> = [
+  [/^\/(admin|teacher)\/students(?:\/|$)/, ["students", "classes", "years"]],
+  [/^\/admin\/teachers/, ["teachers", "users"]], [/^\/admin\/families/, ["students", "users"]],
+  [/^\/admin\/classes/, ["classes", "years", "subjects"]], [/^\/admin\/academic-years/, ["years", "terms"]],
+  [/^\/admin\/timetable/, ["timetable", "classes", "subjects"]],
+  [/^\/(admin|teacher)\/marks/, ["structures", "students", "marks", "submissions", "grading", "assignments"]],
+  [/^\/(admin|teacher)\/assignments/, ["assignments", "classes", "subjects", "students"]],
+  [/^\/(admin|teacher|student|guardian)\/homework/, ["homework", "assignments", "classes", "subjects"]],
+  [/^\/(admin|student|guardian)\/grades/, ["structures", "marks", "students", "grading", "assignments"]],
+  [/^\/admin\/reports/, ["structures", "marks", "students", "grading", "assignments", "teachers"]],
+  [/^\/(admin|teacher|student|guardian)\/attendance/, ["attendance", "students", "classes"]],
+  [/^\/admin\/fees/, ["fees", "students"]], [/^\/admin\/users/, ["users", "roles"]],
+  [/^\/admin\/roles/, ["roles"]], [/^\/admin\/audit/, ["audit"]],
+  [/^\/announcements/, ["announcements", "users"]], [/^\/messages/, ["messages", "users"]],
+  [/^\/notifications/, ["notifications"]], [/^\/events/, ["events"]], [/^\/moderation/, ["reports", "messages", "users"]],
+  [/^\/profile/, ["users"]],
+];
+
+function RouteDataGate({ children }: { children: ReactNode }) {
+  const { ensureData, ready, currentUser } = useApp();
+  const loc = useLocation();
+  const keys = ROUTE_DATA.find(([re]) => re.test(loc.pathname))?.[1] ?? [];
+  const [loading, setLoading] = useState(() => keys.length > 0);
+  useEffect(() => {
+    if (!ready || !currentUser || !keys.length) { setLoading(false); return; }
+    let live = true; setLoading(true);
+    ensureData(keys).finally(() => { if (live) setLoading(false); });
+    return () => { live = false; };
+  }, [ready, currentUser?.id, loc.pathname]);
+  return loading ? <div className="min-h-[60vh] grid place-items-center text-sm text-soft">Loading…</div> : <>{children}</>;
 }
 
 export function AppShell() {
@@ -283,7 +316,7 @@ export function AppShell() {
       </header>
 
       <main className="px-4 py-6 sm:px-6 lg:px-8">
-        <Outlet />
+        <RouteDataGate><Outlet /></RouteDataGate>
       </main>
 
       {ui.toast && (

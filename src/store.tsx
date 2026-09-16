@@ -4,8 +4,7 @@ import type {
 } from "./types";
 import { buildSeed } from "./data/seed";
 import { supabase, isSupabaseConfigured, usernameToEmail } from "./lib/supabase";
-import { hydrate, sync, setProfileId, loadProfileForSession, type DbMode } from "./lib/backend";
-import { loadCachedDb, saveCachedDb, clearCachedDb } from "./lib/dbCache";
+import { hydrate, hydrateData, sync, setProfileId, loadProfileForSession, type DbMode, type DataKey } from "./lib/backend";
 
 export const uid = () => crypto.randomUUID();
 
@@ -311,6 +310,8 @@ interface Ctx {
   mode: DbMode;
   /** True when the project is reachable but the migrations haven't been applied yet. */
   schemaMissing: boolean;
+  /** Load a feature domain on demand. */
+  ensureData: (keys: DataKey[]) => Promise<void>;
   /** Re-probe the database and re-hydrate (after migrations are applied). */
   reconnect: () => Promise<DbMode | "missing">;
 }
@@ -318,89 +319,84 @@ interface Ctx {
 const AppCtx = createContext<Ctx | null>(null);
 
 export function AppProvider({ children }: { children: ReactNode }) {
-  const cached = useMemo(() => (isSupabaseConfigured ? loadCachedDb() : null), []);
-  const [db, setDb] = useState<DB>(() => cached ?? buildSeed());
-  // A cache hit means we can paint immediately — the real fetch still runs
-  // in the background and silently replaces this the moment it lands.
-  const [ready, setReady] = useState(!!cached);
-  const [mode, setMode] = useState<DbMode>(cached ? "live" : "off");
+  const [db, setDb] = useState<DB>(() => buildSeed());
+  const [ready, setReady] = useState(false);
+  const [mode, setMode] = useState<DbMode>(isSupabaseConfigured ? "live" : "off");
   const [schemaMissing, setSchemaMissing] = useState(false);
   const [sessionUserId, setSessionUserId] = useState<string | null>(null);
-  const [yearId, setYearId] = useState(() => cached ? (cached.years.find((y) => y.active)?.id ?? cached.years[0]?.id ?? "") : "");
+  const [yearId, setYearId] = useState("");
   const [toastState, setToastState] = useState<Toast | null>(null);
   const dbRef = useRef(db);
 
-  /* Boot: check the session first (a local token read, not a network round
-   * trip in the common case) so — combined with a cache hit — we can paint
-   * the correct screen (dashboard or login) immediately. hydrate() then
-   * refreshes quietly in the background; no visible reconnect, the data
-   * just becomes current a moment later. */
-  useEffect(() => {
-    let mounted = true;
-    let backgroundTimer: number | undefined;
-    let backgroundIdle = false;
-    (async () => {
-      if (isSupabaseConfigured && supabase) {
-        const { data } = await supabase.auth.getSession();
-        const uid = data.session?.user?.id ?? null;
-        if (uid) { setSessionUserId(uid); setProfileId(uid); }
-        supabase.auth.onAuthStateChange((_evt, session) => {
-          const id = session?.user?.id ?? null;
-          setSessionUserId(id);
-          setProfileId(id);
-        });
-      }
-      if (cached) setReady(true); // we already know what to show — no spinner
+  const loadedKeys = useRef(new Set<string>());
+  const loadingKeys = useRef(new Map<string, Promise<void>>());
 
-      // Fast boot: only fetch the identity + core academic data needed to
-      // render the first screen. Everything else is fetched after first paint.
-      const { db: loaded, mode: m, schemaMissing: missing } = await hydrate({ fast: true });
-      if (!mounted) return;
-      dbRef.current = loaded;
-      setDb(loaded);
-      setMode(m);
-      setSchemaMissing(missing);
-      setYearId(loaded.years.find((y) => y.active)?.id ?? loaded.years[0]?.id ?? "");
-      setReady(true);
+  const roleBootKeys = (role: string): DataKey[] => {
+    const common: DataKey[] = ["school", "years", "terms", "classes", "subjects", "roles"];
+    if (role === "admin") return [...common, "teachers", "students", "structures", "attendance", "timetable"];
+    if (role === "teacher") return [...common, "teachers", "assignments", "students", "homework", "timetable"];
+    if (role === "student") return [...common, "students", "assignments", "teachers", "homework", "timetable"];
+    return [...common, "students", "assignments", "teachers", "homework", "timetable", "fees"];
+  };
 
-      // Do NOT immediately start another large request. Let the first screen
-      // render and then fetch the complete snapshot during browser idle time.
-      // This prevents login/navigation from competing with the initial data
-      // request and makes the app feel immediate on cold starts.
+  const ensureData = async (keys: DataKey[]) => {
+    if (!isSupabaseConfigured || !supabase || modeRef.current !== "live") return;
+    const wanted = [...new Set(keys)].filter((k) => !loadedKeys.current.has(k));
+    if (!wanted.length) return;
+    const pending = wanted.map((k) => loadingKeys.current.get(k)).filter(Boolean) as Promise<void>[];
+    if (pending.length) await Promise.all(pending);
+    const stillNeeded = wanted.filter((k) => !loadedKeys.current.has(k) && !loadingKeys.current.has(k));
+    if (!stillNeeded.length) return;
+    const token = (async () => {
+      const { db: loaded, mode: m, schemaMissing: missing } = await hydrateData(stillNeeded, dbRef.current);
       if (m === "live") {
-        const runBackground = async () => {
-          const background = await hydrate();
-          if (!mounted) return;
-          dbRef.current = background.db;
-          setDb(background.db);
-          setMode(background.mode);
-          setSchemaMissing(background.schemaMissing);
-          setYearId(background.db.years.find((y) => y.active)?.id ?? background.db.years[0]?.id ?? "");
-          if (background.mode === "live") saveCachedDb(background.db);
-        };
-        const idle = (window as any).requestIdleCallback as ((cb: () => void, opts?: { timeout: number }) => number) | undefined;
-        if (idle) {
-          backgroundIdle = true;
-          backgroundTimer = idle(() => void runBackground(), { timeout: 5000 });
-        } else {
-          backgroundTimer = window.setTimeout(() => void runBackground(), 1800);
-        }
-      } else {
-        clearCachedDb();
+        dbRef.current = loaded;
+        setDb(loaded);
+        setMode(m);
+        setSchemaMissing(missing);
+        stillNeeded.forEach((k) => loadedKeys.current.add(k));
       }
     })();
-    return () => {
-      mounted = false;
-      if (backgroundTimer !== undefined) {
-        if (backgroundIdle) (window as any).cancelIdleCallback?.(backgroundTimer);
-        else window.clearTimeout(backgroundTimer);
+    stillNeeded.forEach((k) => loadingKeys.current.set(k, token));
+    try { await token; } finally { stillNeeded.forEach((k) => loadingKeys.current.delete(k)); }
+  };
+
+  /* Boot is intentionally small: session/profile first, then only the domains
+   * needed by that role's dashboard. Every other domain waits for navigation. */
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      if (!isSupabaseConfigured || !supabase) { setReady(true); return; }
+      const { data } = await supabase.auth.getSession();
+      const uid = data.session?.user?.id ?? null;
+      if (!uid) { setReady(true); return; }
+      setSessionUserId(uid); setProfileId(uid);
+      const profile = await loadProfileForSession(uid);
+      if (!mounted) return;
+      if (profile) {
+        dbRef.current = { ...dbRef.current, users: [profile] };
+        modeRef.current = "live";
+        setDb(dbRef.current);
+        setReady(true);
+        setMode("live");
+        await ensureData(roleBootKeys(profile.role));
+      } else {
+        setReady(true);
       }
-    };
+      supabase.auth.onAuthStateChange((_evt, session) => {
+        const id = session?.user?.id ?? null;
+        setSessionUserId(id); setProfileId(id);
+      });
+    })();
+    return () => { mounted = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   /** Re-probe and re-hydrate — used by the setup console after migrations land. */
   const reconnect = async (): Promise<DbMode | "missing"> => {
+    loadedKeys.current.clear();
     const { db: loaded, mode: m, schemaMissing: missing } = await hydrate();
+    loadedKeys.current = new Set(["school","years","terms","classes","subjects","teachers","assignments","students","structures","marks","submissions","grading","attendance","fees","homework","timetable","roles","users","announcements","messages","notifications","events","audit","reports"]);
     dbRef.current = loaded;
     setDb(loaded);
     setMode(m);
@@ -476,15 +472,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (profile) {
       if (profile.status !== "active") { await supabase.auth.signOut(); setSessionUserId(null); setProfileId(null); return { ok: false, error: "This account has been disabled. Contact the administrator." }; }
       update((d) => { d.users = [...d.users.filter((u) => u.id !== profile.id), profile]; });
-      // After authentication, fetch the small one-request bootstrap so the
-      // first dashboard is real Supabase data, not the bundled seed/cache.
-      const { db: loaded, mode: loadedMode, schemaMissing: loadedMissing } = await hydrate({ fast: true });
-      dbRef.current = loaded;
-      setDb(loaded);
-      setMode(loadedMode);
-      setSchemaMissing(loadedMissing);
-      setYearId(loaded.years.find((y) => y.active)?.id ?? loaded.years[0]?.id ?? "");
-      setReady(true);
+      await ensureData(roleBootKeys(profile.role));
       return { ok: true, user: profile };
     }
     return { ok: true };
@@ -492,9 +480,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const logout = () => {
     supabase?.auth.signOut();
+    loadedKeys.current.clear();
+    loadingKeys.current.clear();
+    const fresh = buildSeed();
+    dbRef.current = fresh;
+    setDb(fresh);
+    setYearId("");
     setSessionUserId(null);
     setProfileId(null);
-    clearCachedDb();
   };
 
   const toast = (msg: string, tone: "ok" | "warn" = "ok") => setToastState({ id: Date.now(), msg, tone });
@@ -517,7 +510,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     yearId, setYear: setYearId,
     sessionUserId, currentUser, login, logout,
     toast, ui: { toast: toastState }, dismissToast,
-    ready, mode, schemaMissing, reconnect,
+    ready, mode, schemaMissing, ensureData, reconnect,
   };
 
   if (!ready) {

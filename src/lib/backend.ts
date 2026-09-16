@@ -10,9 +10,10 @@ import type {
  * Backend adapter — the single place where the in-memory `DB` shape meets the
  * real Supabase/PostgreSQL schema.
  *
- *  - hydrate()  : loads every collection through the anon client. Row Level
- *                 Security on the server decides what THIS user may see; the
- *                 client never filters for security, only for shape.
+ *  - hydrate()  : loads only the requested domains (or every collection when
+ *                 called without arguments). Row Level Security on the server
+ *                 decides what THIS user may see; the client never filters for
+ *                 security, only for shape.
  *  - sync()     : diffs an old DB snapshot against a new one and applies the
  *                 delta (upsert / delete) to PostgreSQL. This lets the whole
  *                 app keep calling `update((d) => …)` unchanged.
@@ -98,71 +99,53 @@ async function sel<T = any>(table: string, select = "*"): Promise<T[] | null> {
   return (data as T[]) ?? [];
 }
 
-/**
- * One-request bootstrap/snapshot loaders. The SQL functions are SECURITY
- * INVOKER, so the existing table RLS remains the authorization boundary.
- */
-async function rpcRows(name: "get_app_bootstrap" | "get_app_snapshot"): Promise<Record<string, any[]> | null> {
-  if (!isSupabaseConfigured) return null;
-  const { data, error } = await sb()!.rpc(name);
-  if (error) {
-    console.warn(`[backend] ${name} failed:`, error.message);
-    return null;
-  }
-  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
-  return data as Record<string, any[]>;
-}
+export type DataKey =
+  | "school" | "years" | "terms" | "classes" | "subjects" | "teachers" | "assignments"
+  | "students" | "structures" | "marks" | "submissions" | "grading" | "attendance"
+  | "fees" | "homework" | "timetable" | "roles" | "users" | "announcements"
+  | "messages" | "notifications" | "events" | "audit" | "reports";
 
-function rowsFromRpc(r: Record<string, any[]>) {
-  return {
-    schools: r.schools ?? [], years: r.academic_years ?? [], terms: r.terms ?? [],
-    classes: r.classes ?? [], sections: r.sections ?? [], subjects: r.subjects ?? [],
-    teachers: r.teachers ?? [], assignments: r.teacher_assignments ?? [],
-    students: r.students ?? [], enrollments: r.enrollments ?? [],
-    documents: r.student_documents ?? [], structures: r.assessment_structures ?? [],
-    items: r.assessment_items ?? [], marks: r.assessment_marks ?? [],
-    submissions: r.mark_submissions ?? [], gradeBands: r.grade_bands ?? [],
-    registers: r.attendance_registers ?? [], entries: r.attendance_entries ?? [],
-    fees: r.fee_items ?? [], homework: r.homework ?? [], timetable: r.timetable_entries ?? [],
-    roleDefs: r.role_defs ?? [], rolePerms: r.role_permissions ?? [],
-    profiles: r.profiles ?? [], guardianStudents: r.guardian_students ?? [],
-    announcements: r.announcements ?? [], announcementReads: r.announcement_reads ?? [],
-    conversations: r.conversations ?? [], participants: r.conversation_participants ?? [],
-    messages: r.messages ?? [], notifications: r.notifications ?? [], events: r.events ?? [],
-    audit: r.audit_log ?? [], reports: r.message_reports ?? [],
-  };
-}
+const DATA_TABLES: Record<DataKey, string[]> = {
+  school: ["schools"], years: ["academic_years"], terms: ["terms"], classes: ["classes", "sections"],
+  subjects: ["subjects"], teachers: ["teachers"], assignments: ["teacher_assignments"],
+  students: ["students", "enrollments", "student_documents"], structures: ["assessment_structures", "assessment_items"],
+  marks: ["assessment_marks"], submissions: ["mark_submissions"], grading: ["grade_bands"],
+  attendance: ["attendance_registers", "attendance_entries"], fees: ["fee_items"], homework: ["homework"],
+  timetable: ["timetable_entries"], roles: ["role_defs", "role_permissions"], users: ["profiles", "guardian_students"],
+  announcements: ["announcements", "announcement_reads"], messages: ["conversations", "conversation_participants", "messages"],
+  notifications: ["notifications"], events: ["events"], audit: ["audit_log"], reports: ["message_reports"],
+};
 
-export async function hydrate(options: { fast?: boolean } = {}): Promise<{ db: DB; mode: DbMode; schemaMissing: boolean }> {
-  const fast = options.fast === true;
+export const tablesFor = (...keys: DataKey[]) => new Set(keys.flatMap((k) => DATA_TABLES[k]));
+
+export async function hydrate(requested?: Set<string>, base?: DB): Promise<{ db: DB; mode: DbMode; schemaMissing: boolean }> {
   const seed = buildSeed();
-  if (!isSupabaseConfigured) return { db: seed, mode: "off", schemaMissing: false };
+  const probe = await checkSchema();
+  if (probe === "off") return { db: seed, mode: "off", schemaMissing: false };
+  if (probe === "missing") return { db: seed, mode: "local", schemaMissing: true };
 
-  // The RPC itself is also our schema probe. This removes the old extra
-  // "select schools" request from every application start.
-  const remoteRows = await rpcRows(fast ? "get_app_bootstrap" : "get_app_snapshot");
-  if (!remoteRows) {
-    // Preserve the old setup/offline behavior. A failed RPC may simply mean
-    // the new migration has not been installed yet.
-    const probe = await checkSchema();
-    if (probe === "missing") return { db: seed, mode: "local", schemaMissing: true };
-    return { db: seed, mode: "local", schemaMissing: false };
-  }
-
-  const {
+  // Parallel reads; any table that fails (e.g. migration not yet applied)
+  // falls back to the seed so the UI still renders — loudly, not silently.
+  const [
     schools, years, terms, classes, sections, subjects, teachers, assignments,
     students, enrollments, documents, structures, items, marks, submissions,
     gradeBands, registers, entries, fees, homework, timetable,
     roleDefs, rolePerms, profiles, guardianStudents,
     announcements, announcementReads, conversations, participants,
     messages, notifications, events, audit, reports,
-  } = rowsFromRpc(remoteRows);
+  ] = await Promise.all([
+    ...["schools", "academic_years", "terms", "classes", "sections", "subjects", "teachers", "teacher_assignments",
+      "students", "enrollments", "student_documents", "assessment_structures", "assessment_items", "assessment_marks",
+      "mark_submissions", "grade_bands", "attendance_registers", "attendance_entries", "fee_items", "homework", "timetable_entries",
+      "role_defs", "role_permissions", "profiles", "guardian_students", "announcements", "announcement_reads", "conversations",
+      "conversation_participants", "messages", "notifications", "events", "audit_log", "message_reports"].map((t) => want.has(t) ? sel(t) : Promise.resolve(null)),
+  ]);
 
-  const db: DB = seed;
-  let remote = false;
+  const db: DB = base ? structuredClone(base) : seed;
+  const remote = [schools, years, terms, classes, sections, subjects, teachers, assignments, students, enrollments, documents, structures, items, marks, submissions, gradeBands, registers, entries, fees, homework, timetable, roleDefs, rolePerms, profiles, guardianStudents, announcements, announcementReads, conversations, participants, messages, notifications, events, audit, reports].some(Boolean);
+  const want = requested ?? new Set(Object.values(DATA_TABLES).flat());
 
   if (schools) {
-    remote = true;
     const s = schools.find((x: any) => x.id === SCHOOL_ID);
     if (s) db.settings = { schoolName: s.name, motto: s.motto ?? "" };
   }
@@ -306,6 +289,11 @@ export async function hydrate(options: { fast?: boolean } = {}): Promise<{ db: D
   })) as MessageReport[];
 
   return { db, mode: remote ? "live" : "local", schemaMissing: false };
+}
+
+/** Load only the requested domain(s), merging them into the existing client DB. */
+export async function hydrateData(keys: DataKey[], base: DB) {
+  return hydrate(tablesFor(...keys), base);
 }
 
 /* =========================================================================

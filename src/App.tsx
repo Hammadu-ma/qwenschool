@@ -1,7 +1,8 @@
-import { type ReactNode } from "react";
-import { HashRouter, Navigate, Route, Routes } from "react-router-dom";
+import React, { type ReactNode } from "react";
+import { HashRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { Compass } from "lucide-react";
 import { AppProvider, homePathFor, useApp } from "./store";
+import type { DataKey } from "./lib/backend";
 import type { Role } from "./types";
 import { AppShell } from "./Layout";
 import { AccessDenied, LoginPage } from "./pages/Auth";
