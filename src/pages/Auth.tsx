@@ -1,45 +1,29 @@
 import { useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
-import { GraduationCap, Lock, LogIn, ShieldAlert, ShieldCheck, Eye, EyeOff, ArrowLeft, Loader2, Database, TerminalSquare, CheckCircle2, XCircle, Copy, ExternalLink, RefreshCw, Zap } from "lucide-react";
+import { GraduationCap, Lock, LogIn, ShieldAlert, ShieldCheck, Eye, EyeOff, ArrowLeft, Loader2, Database, CheckCircle2, Copy, ExternalLink, RefreshCw } from "lucide-react";
 import { homePathFor, useApp } from "../store";
 import { Btn, RoleBadge } from "../ui";
-import { applyMigrations } from "../lib/backend";
 import { MIGRATIONS, COMBINED_SQL, sqlEditorUrl, PROJECT_REF } from "../lib/migrations";
-
-type StepState = "idle" | "run" | "ok" | "fail";
 
 /**
  * Commissioning console — shown while the Supabase project is reachable but
- * the migrations haven't been applied yet. Two paths:
- *   A. Paste the service_role key (memory only, never stored) and let the
- *      browser apply all four migrations via the Management API.
- *   B. Guided: copy each file into the SQL Editor.
- * Either way, "Re-check & connect" re-hydrates and flips the app to live mode.
+ * the migrations haven't been applied yet. Deliberately guided-only: this
+ * screen ships in the production bundle, where anyone can open it, so it
+ * must never ask for or accept a service_role / Management API key. Those
+ * are full-project-admin credentials — pasting one into a browser tab means
+ * it travels through client JS (visible to any XSS, browser extension, or
+ * dev-tools inspection on that page) to reach api.supabase.com directly.
+ * Applying schema changes is an operator/CI action, done from a trusted
+ * machine via the Supabase CLI or the dashboard's SQL Editor — never from
+ * the app itself. This console only helps you get the SQL there.
  */
 function SetupConsole({ onConnected }: { onConnected: () => void }) {
   const { reconnect, toast } = useApp();
   const [open, setOpen] = useState(true);
-  const [path, setPath] = useState<"auto" | "guided">("auto");
-  const [key, setKey] = useState("");
-  const [showKey, setShowKey] = useState(false);
-  const [busy, setBusy] = useState(false);
   const [checking, setChecking] = useState(false);
-  const [steps, setSteps] = useState<Record<string, StepState>>({});
   const [notice, setNotice] = useState<{ tone: "ok" | "warn"; text: string } | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
-
-  const mark = (file: string, s: StepState) => setSteps((p) => ({ ...p, [file]: s }));
-
-  const runAuto = async () => {
-    if (!key.trim()) { setNotice({ tone: "warn", text: "Paste your service_role key first (it stays in this tab's memory only)." }); return; }
-    setBusy(true); setNotice(null); setSteps({});
-    const ok = await applyMigrations(key.trim(), MIGRATIONS, (file, state) => mark(file, state));
-    setBusy(false);
-    if (ok) {
-      setNotice({ tone: "ok", text: "All migrations applied. Re-checking the connection…" });
-      await recheck();
-    }
-  };
+  const [showEach, setShowEach] = useState(false);
 
   const recheck = async () => {
     setChecking(true);
@@ -51,7 +35,7 @@ function SetupConsole({ onConnected }: { onConnected: () => void }) {
     } else if (res === "error") {
       setNotice({ tone: "warn", text: "Couldn't reach the project just now (network hiccup?). Wait a moment and re-check." });
     } else {
-      setNotice({ tone: "warn", text: "Schema still not detected. If you just applied the migrations, wait a moment and re-check, or use the guided path." });
+      setNotice({ tone: "warn", text: "Schema still not detected. If you just applied the migrations, wait a moment and re-check." });
     }
   };
 
@@ -59,9 +43,6 @@ function SetupConsole({ onConnected }: { onConnected: () => void }) {
     try { await navigator.clipboard.writeText(sql); setCopied(file); setTimeout(() => setCopied(null), 1600); }
     catch { setNotice({ tone: "warn", text: "Clipboard blocked — select the file in supabase/migrations and copy manually." }); }
   };
-  const [showEach, setShowEach] = useState(false);
-
-  const done = MIGRATIONS.filter((m) => steps[m.file] === "ok").length;
 
   return (
     <div className="anim-rise mb-6 overflow-hidden rounded-xl border border-pine-800 bg-pine-950 text-pine-100 shadow-lg">
@@ -69,94 +50,43 @@ function SetupConsole({ onConnected }: { onConnected: () => void }) {
         <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-gold-400/15 text-gold-400"><Database className="h-4.5 w-4.5" /></span>
         <span className="flex-1">
           <span className="flex items-center gap-2 font-display text-[15px] font-extrabold tracking-tight text-white">Connect the live database</span>
-          <span className="mt-0.5 block text-[11.5px] text-pine-300">Project <span className="font-mono text-gold-300">{PROJECT_REF}</span> is reachable — apply the schema to enable real sign-in and persistence.</span>
+          <span className="mt-0.5 block text-[11.5px] text-pine-300">Project <span className="font-mono text-gold-300">{PROJECT_REF}</span> is reachable — apply the schema (once, from the Supabase dashboard) to enable real sign-in and persistence.</span>
         </span>
         <span className="live-dot h-2.5 w-2.5 shrink-0 rounded-full bg-gold-400" />
       </button>
 
       {open && (
         <div className="border-t border-pine-800/70 px-5 py-4">
-          {/* path switcher */}
-          <div className="flex gap-1.5">
-            {([["auto", "Automatic", Zap], ["guided", "Guided (SQL Editor)", TerminalSquare]] as const).map(([id, label, Icon]) => (
-              <button key={id} onClick={() => setPath(id)}
-                className={`flex cursor-pointer items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-bold transition-all ${path === id ? "bg-gold-400 text-pine-950" : "bg-pine-900 text-pine-300 hover:text-white"}`}>
-                <Icon className="h-3.5 w-3.5" /> {label}
-              </button>
+          <div className="space-y-2">
+            <p className="text-[11.5px] leading-relaxed text-pine-300">Open the <a href={sqlEditorUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-bold text-gold-300 underline-offset-2 hover:underline">SQL Editor <ExternalLink className="h-3 w-3" /></a> (Supabase dashboard, not this app), paste, and click Run — once:</p>
+            <button onClick={() => copy("__combined__", COMBINED_SQL)} className="flex w-full cursor-pointer items-center gap-3 rounded-lg border border-gold-400/40 bg-gold-400/10 px-3.5 py-3 text-left transition-colors hover:bg-gold-400/15">
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gold-400 text-pine-950">
+                {copied === "__combined__" ? <CheckCircle2 className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block font-mono text-[12px] font-bold text-white">{copied === "__combined__" ? "Copied — paste it into the SQL Editor" : `Copy all ${MIGRATIONS.length} migrations as one script`}</span>
+                <span className="block text-[10.5px] text-pine-400">One paste, one Run — instead of {MIGRATIONS.length} separate copy/paste/run cycles.</span>
+              </span>
+            </button>
+
+            <button onClick={() => setShowEach((v) => !v)} className="cursor-pointer text-[11px] font-semibold text-pine-400 underline-offset-2 hover:text-pine-200 hover:underline">
+              {showEach ? "Hide individual files" : "Prefer to run them one at a time instead? (for troubleshooting)"}
+            </button>
+
+            {showEach && MIGRATIONS.map((m, i) => (
+              <div key={m.file} className="flex items-center gap-2.5 rounded-lg border border-pine-800 bg-pine-900/50 px-3 py-2">
+                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-pine-800 font-mono text-[10px] font-bold text-gold-300">{i + 1}</span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate font-mono text-[11.5px] font-semibold text-white">{m.file}</span>
+                  <span className="block truncate text-[10px] text-pine-400">{m.title}</span>
+                </span>
+                <button onClick={() => copy(m.file, m.sql)} className="flex shrink-0 cursor-pointer items-center gap-1 rounded-md bg-pine-800 px-2 py-1.5 text-[11px] font-bold text-pine-100 transition-colors hover:bg-pine-700">
+                  {copied === m.file ? <CheckCircle2 className="h-3.5 w-3.5 text-gold-400" /> : <Copy className="h-3.5 w-3.5" />}
+                  {copied === m.file ? "Copied" : "Copy"}
+                </button>
+              </div>
             ))}
           </div>
-
-          {path === "auto" ? (
-            <div className="mt-4 space-y-3">
-              <div>
-                <label className="mb-1.5 block text-[10.5px] font-bold uppercase tracking-[0.14em] text-pine-400">Service role key · never stored, never bundled</label>
-                <div className="relative">
-                  <input
-                    type={showKey ? "text" : "password"}
-                    value={key}
-                    onChange={(e) => setKey(e.target.value)}
-                    placeholder="eyJhbGciOi…  (service_role)"
-                    className="w-full rounded-lg border border-pine-700 bg-pine-900/70 px-3.5 py-2.5 pr-11 font-mono text-[12px] text-pine-100 placeholder:text-pine-500 outline-none transition-all focus:border-gold-400 focus:ring-2 focus:ring-gold-400/20"
-                  />
-                  <button type="button" onClick={() => setShowKey((v) => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 cursor-pointer text-pine-400 hover:text-white" aria-label="Toggle key visibility">
-                    {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                  </button>
-                </div>
-                <p className="mt-1.5 text-[10.5px] leading-relaxed text-pine-400">Runs entirely in your browser via the Supabase Management API. The key is held in memory for this tab only and is discarded on reload.</p>
-              </div>
-              <Btn variant="gold" onClick={runAuto} disabled={busy} className="w-full">
-                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
-                {busy ? `Applying… ${done}/${MIGRATIONS.length}` : `Apply ${MIGRATIONS.length} migrations`}
-              </Btn>
-            </div>
-          ) : (
-            <div className="mt-4 space-y-2">
-              <p className="text-[11.5px] leading-relaxed text-pine-300">Open the <a href={sqlEditorUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-bold text-gold-300 underline-offset-2 hover:underline">SQL Editor <ExternalLink className="h-3 w-3" /></a>, paste, and click Run — once:</p>
-              <button onClick={() => copy("__combined__", COMBINED_SQL)} className="flex w-full cursor-pointer items-center gap-3 rounded-lg border border-gold-400/40 bg-gold-400/10 px-3.5 py-3 text-left transition-colors hover:bg-gold-400/15">
-                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gold-400 text-pine-950">
-                  {copied === "__combined__" ? <CheckCircle2 className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block font-mono text-[12px] font-bold text-white">{copied === "__combined__" ? "Copied — paste it into the SQL Editor" : `Copy all ${MIGRATIONS.length} migrations as one script`}</span>
-                  <span className="block text-[10.5px] text-pine-400">One paste, one Run — instead of {MIGRATIONS.length} separate copy/paste/run cycles.</span>
-                </span>
-              </button>
-
-              <button onClick={() => setShowEach((v) => !v)} className="cursor-pointer text-[11px] font-semibold text-pine-400 underline-offset-2 hover:text-pine-200 hover:underline">
-                {showEach ? "Hide individual files" : "Prefer to run them one at a time instead? (for troubleshooting)"}
-              </button>
-
-              {showEach && MIGRATIONS.map((m, i) => (
-                <div key={m.file} className="flex items-center gap-2.5 rounded-lg border border-pine-800 bg-pine-900/50 px-3 py-2">
-                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-pine-800 font-mono text-[10px] font-bold text-gold-300">{i + 1}</span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate font-mono text-[11.5px] font-semibold text-white">{m.file}</span>
-                    <span className="block truncate text-[10px] text-pine-400">{m.title}</span>
-                  </span>
-                  <button onClick={() => copy(m.file, m.sql)} className="flex shrink-0 cursor-pointer items-center gap-1 rounded-md bg-pine-800 px-2 py-1.5 text-[11px] font-bold text-pine-100 transition-colors hover:bg-pine-700">
-                    {copied === m.file ? <CheckCircle2 className="h-3.5 w-3.5 text-gold-400" /> : <Copy className="h-3.5 w-3.5" />}
-                    {copied === m.file ? "Copied" : "Copy"}
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* progress log */}
-          {Object.keys(steps).length > 0 && (
-            <div className="mt-4 space-y-1 rounded-lg border border-pine-800 bg-black/30 p-3 font-mono text-[11px]">
-              {MIGRATIONS.filter((m) => steps[m.file]).map((m) => (
-                <div key={m.file} className="flex items-center gap-2">
-                  {steps[m.file] === "run" && <Loader2 className="h-3.5 w-3.5 animate-spin text-gold-400" />}
-                  {steps[m.file] === "ok" && <CheckCircle2 className="h-3.5 w-3.5 text-pine-400" />}
-                  {steps[m.file] === "fail" && <XCircle className="h-3.5 w-3.5 text-rust-500" />}
-                  <span className={steps[m.file] === "ok" ? "text-pine-300" : steps[m.file] === "fail" ? "text-rust-400" : "text-pine-400"}>{m.file}</span>
-                  {steps[m.file] === "ok" && <span className="text-pine-500">applied</span>}
-                  {steps[m.file] === "fail" && <span className="text-rust-400">failed</span>}
-                </div>
-              ))}
-            </div>
-          )}
 
           {notice && (
             <div className={`mt-3 rounded-lg px-3.5 py-2.5 text-[12px] font-semibold ${notice.tone === "ok" ? "bg-pine-800/70 text-pine-100" : "bg-gold-400/10 text-gold-300"}`}>{notice.text}</div>

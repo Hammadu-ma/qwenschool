@@ -1,5 +1,4 @@
 import { supabase, isSupabaseConfigured } from "./supabase";
-import { PROJECT_REF } from "./migrations";
 import { buildSeed } from "../data/seed";
 import type {
   DB, User, Student, Enrollment, StudentDoc, AssessmentStructure, AssessmentItem, AttendanceRecord,
@@ -57,42 +56,13 @@ export async function checkSchema(): Promise<DbMode | "missing" | "error"> {
   }
 }
 
-/**
- * Apply the bundled migrations through the Supabase Management API.
- * The service key is supplied at runtime by the operator, lives only in
- * browser memory, and is never persisted or bundled. If the browser blocks
- * the call (CORS), the console falls back to the guided SQL-Editor path.
- */
-export async function applyMigrations(
-  serviceKey: string,
-  files: { file: string; sql: string }[],
-  onStep: (file: string, state: "run" | "ok" | "fail", detail?: string) => void
-): Promise<boolean> {
-  const endpoint = `https://api.supabase.com/v1/projects/${PROJECT_REF}/database/query`;
-  for (const m of files) {
-    onStep(m.file, "run");
-    try {
-      const res = await fetch(endpoint, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${serviceKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ query: m.sql }),
-      });
-      const text = await res.text();
-      let body: any = {};
-      try { body = text ? JSON.parse(text) : {}; } catch { body = { error: text }; }
-      if (!res.ok || body?.error) {
-        const detail = body?.error ?? body?.message ?? `HTTP ${res.status}`;
-        onStep(m.file, "fail", String(detail).slice(0, 160));
-        return false;
-      }
-      onStep(m.file, "ok");
-    } catch {
-      onStep(m.file, "fail", "Browser blocked the direct API call — use the guided SQL Editor path below.");
-      return false;
-    }
-  }
-  return true;
-}
+/* Deliberately no applyMigrations()/Management-API helper here. That would
+ * mean the app ships a code path whose entire purpose is accepting a
+ * service_role (project-admin) key from a text input and sending it to
+ * api.supabase.com from the browser — exactly the kind of secret this
+ * project keeps out of client code. Schema changes are an operator action:
+ * run supabase/migrations/*.sql via the Supabase CLI or the dashboard's SQL
+ * Editor, from a trusted machine, never from this app. */
 
 /* =========================================================================
    hydrate — Supabase → DB shape
