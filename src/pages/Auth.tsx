@@ -48,6 +48,8 @@ function SetupConsole({ onConnected }: { onConnected: () => void }) {
     if (res === "live") {
       toast("Connected to Supabase — live mode.", "ok");
       onConnected();
+    } else if (res === "error") {
+      setNotice({ tone: "warn", text: "Couldn't reach the project just now (network hiccup?). Wait a moment and re-check." });
     } else {
       setNotice({ tone: "warn", text: "Schema still not detected. If you just applied the migrations, wait a moment and re-check, or use the guided path." });
     }

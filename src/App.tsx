@@ -17,9 +17,21 @@ import {
 } from "./pages/communication";
 import { AuditPage, RolesPage } from "./pages/admin";
 
+/** Shown briefly while the initial Supabase session check is still in
+ *  flight — avoids redirecting an already-signed-in person to /login just
+ *  because currentUser hasn't resolved yet on this render. */
+function CheckingSession() {
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-paper">
+      <div className="h-8 w-8 animate-spin rounded-full border-[3px] border-pine-200 border-t-pine-700" />
+    </div>
+  );
+}
+
 /** Route-level authorization: checks the signed-in role, blocks everything else. */
 function Guard({ roles, required, children }: { roles: Role[]; required?: string; children: ReactNode }) {
-  const { currentUser } = useApp();
+  const { currentUser, sessionChecked } = useApp();
+  if (!sessionChecked) return <CheckingSession />;
   if (!currentUser) return <Navigate to="/login" replace />;
   if (!roles.includes(currentUser.role)) {
     return <AccessDenied required={required ?? roles.map((r) => r[0].toUpperCase() + r.slice(1)).join(" / ")} />;
@@ -28,7 +40,8 @@ function Guard({ roles, required, children }: { roles: Role[]; required?: string
 }
 
 function HomeRedirect() {
-  const { currentUser } = useApp();
+  const { currentUser, sessionChecked } = useApp();
+  if (!sessionChecked) return <CheckingSession />;
   if (!currentUser) return <Navigate to="/login" replace />;
   return <Navigate to={homePathFor(currentUser.role)} replace />;
 }

@@ -33,18 +33,28 @@ export type DbMode = "live" | "local" | "off";
 /**
  * Probe the remote schema without writing anything. Distinguishes:
  *   live    — tables exist (data may be empty)
- *   missing — reachable project, migrations not applied (PGRST205 / 42P01)
+ *   missing — reachable project, migrations definitely not applied (PGRST205 / 42P01)
  *   off     — client not configured
+ *   error   — probe itself failed (network blip, timeout, rate limit, transient
+ *             5xx…) — NOT the same as "missing". Treating this the same as
+ *             "missing" used to flip a live, already-signed-in session into
+ *             fake local-demo data on nothing more than a dropped request —
+ *             which looked like data loss / being logged out on refresh.
  */
-export async function checkSchema(): Promise<DbMode | "missing"> {
+export async function checkSchema(): Promise<DbMode | "missing" | "error"> {
   if (!isSupabaseConfigured) return "off";
-  const { error } = await sb()!.from("schools").select("id").limit(1);
-  if (!error) return "live";
-  const code = (error as { code?: string }).code ?? "";
-  const msg = error.message ?? "";
-  if (code === "PGRST205" || code === "42P01" || /does not exist|Could not find the table/i.test(msg)) return "missing";
-  console.warn("[backend] schema probe failed:", msg);
-  return "missing";
+  try {
+    const { error } = await sb()!.from("schools").select("id").limit(1);
+    if (!error) return "live";
+    const code = (error as { code?: string }).code ?? "";
+    const msg = error.message ?? "";
+    if (code === "PGRST205" || code === "42P01" || /does not exist|Could not find the table/i.test(msg)) return "missing";
+    console.warn("[backend] schema probe failed:", msg);
+    return "error";
+  } catch (e) {
+    console.warn("[backend] schema probe threw:", e);
+    return "error";
+  }
 }
 
 /**
@@ -217,11 +227,16 @@ function mapReports(reports: any[]): MessageReport[] {
  * at all (~14 tables). Feature data stays empty here; hydrateGroup() fills
  * it in on demand. This is the call on the critical path to first paint.
  */
-export async function hydrateCore(): Promise<{ db: DB; mode: DbMode; schemaMissing: boolean }> {
+export async function hydrateCore(): Promise<{ db: DB; mode: DbMode; schemaMissing: boolean; transientError: boolean }> {
   const seed = buildSeed();
   const probe = await checkSchema();
-  if (probe === "off") return { db: seed, mode: "off", schemaMissing: false };
-  if (probe === "missing") return { db: seed, mode: "local", schemaMissing: true };
+  if (probe === "off") return { db: seed, mode: "off", schemaMissing: false, transientError: false };
+  if (probe === "missing") return { db: seed, mode: "local", schemaMissing: true, transientError: false };
+  // Probe itself failed (network blip, timeout, transient 5xx) — this is not
+  // "schema missing" or "not configured". Caller keeps whatever it already
+  // had (cached live data, current session) instead of swapping in the fake
+  // seed and dropping the user's session.
+  if (probe === "error") return { db: seed, mode: "off", schemaMissing: false, transientError: true };
 
   const [
     schools, years, terms, classes, sections, subjects, teachers, assignments,
@@ -307,7 +322,11 @@ export async function hydrateCore(): Promise<{ db: DB; mode: DbMode; schemaMissi
     db.notifications = []; db.events = []; db.audit = []; db.reports = [];
   }
 
-  return { db, mode: remote ? "live" : "local", schemaMissing: false };
+  // checkSchema() already confirmed the schema exists — if the `schools`
+  // fetch here still came back null, that's a flaky individual request, not
+  // "schema missing". Report it as transient rather than demoting to local.
+  if (!remote) return { db: seed, mode: "off", schemaMissing: false, transientError: true };
+  return { db, mode: "live", schemaMissing: false, transientError: false };
 }
 
 /**
@@ -387,7 +406,7 @@ export async function hydrateGroup(group: LazyGroup, base: DB): Promise<Partial<
  * navigation use hydrateCore() + hydrateGroup() instead, which is what
  * actually fixes first-load latency.
  */
-export async function hydrate(): Promise<{ db: DB; mode: DbMode; schemaMissing: boolean }> {
+export async function hydrate(): Promise<{ db: DB; mode: DbMode; schemaMissing: boolean; transientError: boolean }> {
   const core = await hydrateCore();
   if (core.mode !== "live") return core;
   const groups = await Promise.all(ALL_LAZY_GROUPS.map((g) => hydrateGroup(g, core.db)));

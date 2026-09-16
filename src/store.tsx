@@ -326,7 +326,8 @@ interface Ctx {
   /** True when the project is reachable but the migrations haven't been applied yet. */
   schemaMissing: boolean;
   /** Re-probe the database and re-hydrate (after migrations are applied). */
-  reconnect: () => Promise<DbMode | "missing">;
+  reconnect: () => Promise<DbMode | "missing" | "error">;
+  sessionChecked: boolean;
   /** True once this feature's tables have been fetched this session (or the
    *  app isn't in live mode, where everything is already in memory). Pages
    *  can use this to show a loading state instead of trusting an empty
@@ -349,6 +350,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [mode, setMode] = useState<DbMode>(cached ? "live" : "off");
   const [schemaMissing, setSchemaMissing] = useState(false);
   const [sessionUserId, setSessionUserId] = useState<string | null>(null);
+  // False until the initial supabase.auth.getSession() call resolves. With a
+  // cached snapshot, `ready` flips true on the very first render (to paint
+  // instantly), but sessionUserId is still null at that point — routes that
+  // redirect-to-login on "no currentUser" must wait for this instead, or
+  // they bounce an already-signed-in person to /login before the session
+  // check has had a chance to run.
+  const [sessionChecked, setSessionChecked] = useState(false);
   const [yearId, setYearId] = useState(() => cached ? (cached.years.find((y) => y.active)?.id ?? cached.years[0]?.id ?? "") : "");
   const [toastState, setToastState] = useState<Toast | null>(null);
   const dbRef = useRef(db);
@@ -367,8 +375,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
    * just becomes current a moment later. */
   useEffect(() => {
     let mounted = true;
-    (async () => {
-      if (isSupabaseConfigured && supabase) {
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const attempt = async (isRetry: boolean) => {
+      if (!isRetry && isSupabaseConfigured && supabase) {
         const { data } = await supabase.auth.getSession();
         const uid = data.session?.user?.id ?? null;
         if (uid) { setSessionUserId(uid); setProfileId(uid); }
@@ -378,7 +388,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
           setProfileId(id);
         });
       }
-      if (cached) setReady(true); // we already know what to show — no spinner
+      if (!isRetry) setSessionChecked(true);
+      if (!isRetry && cached) setReady(true); // we already know what to show — no spinner
 
       // hydrateCore() only pulls the small reference data (school structure,
       // people, permissions) — a dozen tables instead of all 33 — so first
@@ -386,8 +397,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // load lazily via ensureGroup() the moment a page that needs them
       // mounts. Any lazy-group data left over from a previous cached
       // session is preserved (stale-until-revalidated) rather than wiped.
-      const { db: core, mode: m, schemaMissing: missing } = await hydrateCore();
+      const { db: core, mode: m, schemaMissing: missing, transientError } = await hydrateCore();
       if (!mounted) return;
+
+      if (transientError) {
+        // The probe itself failed (network blip, timeout) — this is NOT
+        // "schema missing" or "not configured". If we already have a cached
+        // live session, leave mode/db/cache exactly as they are (don't kick
+        // the person to a fake local-demo state or wipe real data) and
+        // quietly retry once shortly after instead.
+        if (cached || modeRef.current === "live") {
+          setReady(true);
+          if (!isRetry) retryTimer = setTimeout(() => { attempt(true); }, 4000);
+          return;
+        }
+        // No prior good state to fall back on (first-ever load, offline) —
+        // surface the connect/retry screen rather than fake seed data.
+        setMode("off");
+        setSchemaMissing(false);
+        setReady(true);
+        return;
+      }
+
       const merged = m === "live" ? mergeCoreIntoCached(core, cached) : core;
       dbRef.current = merged;
       setDb(merged);
@@ -396,15 +427,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setYearId(merged.years.find((y) => y.active)?.id ?? merged.years[0]?.id ?? "");
       if (m === "live") saveCachedDb(merged); else clearCachedDb();
       setReady(true);
-    })();
-    return () => { mounted = false; };
+    };
+
+    attempt(false);
+    return () => { mounted = false; if (retryTimer) clearTimeout(retryTimer); };
   }, []);
 
   /** Re-probe and re-hydrate — used by the setup console after migrations land. */
-  const reconnect = async (): Promise<DbMode | "missing"> => {
+  const reconnect = async (): Promise<DbMode | "missing" | "error"> => {
     loadedGroupsRef.current = new Set();
     loadingGroupsRef.current = new Set();
-    const { db: loaded, mode: m, schemaMissing: missing } = await hydrateCore();
+    const { db: loaded, mode: m, schemaMissing: missing, transientError } = await hydrateCore();
+    if (transientError) return "error"; // leave current state untouched — nothing was actually confirmed
     dbRef.current = loaded;
     setDb(loaded);
     setMode(m);
@@ -485,15 +519,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // session — one with a placeholder id that was never swapped for
         // a real one — which then breaks unrelated features later (e.g. a
         // notification recipient list built from that ghost user).
-        const { db: loaded } = await hydrate();
-        dbRef.current = loaded;
-        setDb(loaded);
-        // hydrate() (unlike hydrateCore()) pulls every table, so everything
-        // is now genuinely fresh — mark every lazy group loaded rather than
-        // let an already-mounted page's ensureGroup() immediately refetch
-        // and briefly stomp this recovered state with a slower request.
-        loadedGroupsRef.current = new Set(ALL_LAZY_GROUPS);
-        setLoadedGroupsTick((t) => t + 1);
+        const recovered = await hydrate();
+        if (recovered.transientError) {
+          // The re-fetch itself failed (network blip) — don't stomp real
+          // local state with the fake seed; just report the sync error.
+          console.warn("[store] recovery hydrate() failed transiently; keeping current state");
+        } else {
+          dbRef.current = recovered.db;
+          setDb(recovered.db);
+          // hydrate() (unlike hydrateCore()) pulls every table, so everything
+          // is now genuinely fresh — mark every lazy group loaded rather than
+          // let an already-mounted page's ensureGroup() immediately refetch
+          // and briefly stomp this recovered state with a slower request.
+          loadedGroupsRef.current = new Set(ALL_LAZY_GROUPS);
+          setLoadedGroupsTick((t) => t + 1);
+        }
       }
       return errors;
     }); // PostgreSQL; RLS decides what lands
@@ -537,7 +577,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     yearId, setYear: setYearId,
     sessionUserId, currentUser, login, logout,
     toast, ui: { toast: toastState }, dismissToast,
-    ready, mode, schemaMissing, reconnect,
+    ready, mode, schemaMissing, reconnect, sessionChecked,
     isGroupLoaded, ensureGroup,
   };
 
