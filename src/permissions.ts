@@ -25,6 +25,7 @@ export const PERMISSION_CATALOG: PermissionDef[] = [
 
   { id: "academics.view", name: "View academics", description: "See classes, timetable and syllabus.", category: "Academics" },
   { id: "academics.manage", name: "Manage academics", description: "Edit classes, sections and assignments.", category: "Academics" },
+  { id: "academics.manage_years", name: "Manage academic years & terms", description: "Create academic years, set the active year, and manage semesters/terms.", category: "Academics" },
   { id: "homework.manage", name: "Manage homework", description: "Set and grade homework.", category: "Academics" },
   { id: "homework.view", name: "View homework", description: "See assigned homework.", category: "Academics" },
   { id: "assignments.view", name: "View assignments", description: "See teacher–subject assignments.", category: "Academics" },

@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { NavLink, Navigate, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
-  Banknote, Bell, CalendarCheck2, CalendarDays, ClipboardList, Clock as ClockIcon, FileBarChart2, GraduationCap,
+  Banknote, Bell, CalendarCheck2, CalendarDays, CalendarRange, ClipboardList, Clock as ClockIcon, FileBarChart2, GraduationCap,
   HeartHandshake, History, Inbox, KeyRound, LayoutDashboard, Layers, LogOut, Megaphone, Menu, RefreshCw,
   ShieldAlert, ShieldCheck, Table2, Users, X, Contact,
   AlertTriangle, Check, ChevronDown, User, BookOpen, Baby, PenLine,
@@ -45,6 +45,7 @@ const NAV: Record<Role, NavGroup[]> = {
     {
       group: "Academics",
       items: [
+        { to: "/admin/academic-years", label: "Academic years", icon: <CalendarRange className="h-4 w-4" />, perm: "academics.manage_years" },
         { to: "/admin/classes", label: "Classes & sections", icon: <Layers className="h-4 w-4" /> },
         { to: "/admin/timetable", label: "Timetable", icon: <ClockIcon className="h-4 w-4" /> },
         { to: "/admin/marks", label: "Mark entry", icon: <Table2 className="h-4 w-4" /> },

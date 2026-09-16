@@ -303,6 +303,7 @@ function diff<T extends { id: string }>(oldR: T[], newR: T[], key: (r: T) => str
 function rowsOf(db: DB) {
   const R: Record<string, any[]> = {
     academic_years: db.years.map((y) => ({ id: y.id, school_id: SCHOOL_ID, name: y.name, start_date: y.start, end_date: y.end, is_active: y.active })),
+    terms: db.terms.map((t) => ({ id: t.id, year_id: t.yearId, name: t.name, seq: t.seq })),
     classes: db.classes.map((c) => ({ id: c.id, school_id: SCHOOL_ID, name: c.name, level: c.level })),
     sections: db.classes.flatMap((c) => c.sections.map((s) => ({ id: s.id, class_id: c.id, name: s.name }))),
     subjects: db.subjects.map((s) => ({ id: s.id, school_id: SCHOOL_ID, code: s.code, name: s.name, color: s.color })),
@@ -389,7 +390,7 @@ async function doSync(oldDB: DB, newDB: DB, errors: string[]): Promise<void> {
 
   // Order matters for FKs: parents before children.
   const ordered = [
-    "academic_years", "classes", "sections", "subjects", "teachers", "students",
+    "academic_years", "terms", "classes", "sections", "subjects", "teachers", "students",
     "teacher_assignments", "enrollments", "student_documents",
     "assessment_structures", "assessment_items", "grade_bands",
     "fee_items", "homework", "timetable_entries", "role_defs",

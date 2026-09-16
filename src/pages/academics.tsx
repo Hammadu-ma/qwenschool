@@ -1,17 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  Banknote, BookOpen, CalendarCheck2, Check, CheckCheck, CheckCircle2,
+  Banknote, BookOpen, CalendarCheck2, CalendarRange, Check, CheckCheck, CheckCircle2,
   ClipboardList, Clock as ClockIcon, Eye, FileBarChart2, FileDown, Globe2, Layers,
   PenLine, Pencil, Plus, Printer, Receipt, RotateCcw, Save, Send, ShieldCheck, Table2, Tag, Trash2,
   Undo2, UserCheck, UserX, Wallet,
 } from "lucide-react";
 import type {
-  AssessmentItem, AssessmentStructure, Assignment, AttendanceStatus, DB, FeeItem, Homework,
-  PaymentMethod, SchoolClass, Section, Student, Submission, Subject, TimetableEntry,
+  AcademicYear, AssessmentItem, AssessmentStructure, Assignment, AttendanceStatus, DB, FeeItem, Homework,
+  PaymentMethod, SchoolClass, Section, Student, Submission, Subject, Term, TimetableEntry,
 } from "../types";
 import {
   assessmentCalc, attendanceStats, childrenOf, describeSyncErrors, feeStats, fmt1, fmtDate, fullName, getClass,
-  getSubject, getTeacher, gradeFor, ordinal, sectionLabel, sectionShort, shortName,
+  getSubject, getTeacher, getYear, gradeFor, ordinal, sectionLabel, sectionShort, shortName,
   structureRanks, structureWeightSum, studentAverage, studentOf, studentResults, studentsOf,
   submissionFor, submissionStatus, teacherFor, teacherPairs, teacherStudentIds,
   todayISO, uid, useApp,
@@ -591,6 +591,208 @@ function StructureModal({ existing, onClose }: { existing?: AssessmentStructure;
    Admin: full CRUD. Teacher/student/guardian: scoped read-only view of the
    classes they teach / are enrolled in, with subjects & teachers shown.
    ========================================================================= */
+/* ================= academic years & terms (admin/superadmin, gated by academics.manage_years) ================= */
+export function AcademicYearsPage() {
+  const { db, currentUser, update, toast } = useApp();
+  const canManage = hasPermission(db, currentUser, "academics.manage_years");
+  const [editYear, setEditYear] = useState<AcademicYear | "new" | null>(null);
+  const [editTerm, setEditTerm] = useState<{ yearId: string; term: Term | "new" } | null>(null);
+  const [confirmDeleteYear, setConfirmDeleteYear] = useState<AcademicYear | null>(null);
+  const [confirmDeleteTerm, setConfirmDeleteTerm] = useState<Term | null>(null);
+
+  if (!canManage) {
+    return <AccessDenied required="academics.manage_years" reason="Only Admins and the Super Admin can manage academic years & terms by default. Ask them to grant it to your role in Roles & permissions if you need it." />;
+  }
+
+  const yearInUse = (y: AcademicYear) =>
+    db.students.some((s) => s.enrollment?.yearId === y.id) || db.structures.some((st) => st.yearId === y.id) || db.homework.some((h) => h.yearId === y.id);
+  const termInUse = (t: Term) => db.structures.some((st) => st.yearId === t.yearId && st.period.trim().toLowerCase() === t.name.trim().toLowerCase());
+
+  const setActiveYear = (y: AcademicYear) => {
+    update((d) => {
+      d.years.forEach((x) => { x.active = x.id === y.id; });
+      pushAudit(d, currentUser, "year.activate", y.name, "Set as the active academic year");
+    });
+    toast(`${y.name} is now the active academic year.`);
+  };
+
+  const removeYear = (y: AcademicYear) => {
+    if (y.active) { toast("Set a different year as active before deleting this one.", "warn"); return; }
+    if (yearInUse(y)) { toast("This year has enrollment, assessment structures or homework tied to it — remove those first.", "warn"); return; }
+    update((d) => {
+      d.years = d.years.filter((x) => x.id !== y.id);
+      d.terms = d.terms.filter((t) => t.yearId !== y.id);
+      pushAudit(d, currentUser, "year.delete", y.name);
+    });
+    toast("Academic year deleted.");
+    setConfirmDeleteYear(null);
+  };
+
+  const removeTerm = (t: Term) => {
+    if (termInUse(t)) { toast("This term has assessment structures using it — remove those first.", "warn"); return; }
+    update((d) => { d.terms = d.terms.filter((x) => x.id !== t.id); pushAudit(d, currentUser, "term.delete", t.name); });
+    toast("Term deleted.");
+    setConfirmDeleteTerm(null);
+  };
+
+  const years = [...db.years].sort((a, b) => b.start.localeCompare(a.start));
+
+  return (
+    <div className="mx-auto max-w-4xl">
+      <PageHead kicker="Academics" title="Academic years & terms" sub="The academic calendar everything else — enrollment, assessment periods, homework — is dated against.">
+        <Btn variant="gold" onClick={() => setEditYear("new")}><Plus className="h-4 w-4" /> New academic year</Btn>
+      </PageHead>
+
+      {years.length === 0 ? (
+        <Panel className="anim-rise"><EmptyState icon={<CalendarRange className="h-5 w-5" />} title="No academic years yet" body="Create one to start enrolling students and scheduling terms." /></Panel>
+      ) : (
+        <div className="space-y-4">
+          {years.map((y) => {
+            const terms = db.terms.filter((t) => t.yearId === y.id).sort((a, b) => a.seq - b.seq);
+            return (
+              <Panel key={y.id} className="anim-rise p-4">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div>
+                    <p className="flex items-center gap-2 font-display text-[16px] font-bold text-ink">
+                      {y.name}
+                      {y.active && <Chip tone="pine"><CheckCircle2 className="h-3 w-3" /> Active</Chip>}
+                    </p>
+                    <p className="text-[11.5px] text-soft">{fmtDate(y.start)} — {fmtDate(y.end)}</p>
+                  </div>
+                  <span className="flex flex-wrap items-center gap-1.5">
+                    {!y.active && <Btn size="sm" variant="ghost" onClick={() => setActiveYear(y)}><CheckCircle2 className="h-3.5 w-3.5" /> Set active</Btn>}
+                    <button onClick={() => setEditYear(y)} className="cursor-pointer rounded p-1.5 text-soft hover:bg-pine-100 hover:text-pine-700"><Pencil className="h-3.5 w-3.5" /></button>
+                    <button onClick={() => setConfirmDeleteYear(y)} className="cursor-pointer rounded p-1.5 text-soft hover:bg-rust-100 hover:text-rust-600"><Trash2 className="h-3.5 w-3.5" /></button>
+                  </span>
+                </div>
+
+                <div className="mt-3 border-t border-mist pt-3">
+                  <div className="mb-2 flex items-center justify-between">
+                    <p className="text-[11px] font-bold uppercase tracking-[0.08em] text-soft">Terms / semesters</p>
+                    <button onClick={() => setEditTerm({ yearId: y.id, term: "new" })} className="flex cursor-pointer items-center gap-1 text-[11.5px] font-semibold text-pine-700 hover:text-pine-800">
+                      <Plus className="h-3.5 w-3.5" /> Add term
+                    </button>
+                  </div>
+                  {terms.length === 0 ? (
+                    <p className="text-[12px] text-soft">No terms defined for this year yet.</p>
+                  ) : (
+                    <div className="flex flex-wrap gap-1.5">
+                      {terms.map((t) => (
+                        <span key={t.id} className="flex items-center gap-1.5 rounded-lg border border-mist bg-card py-1 pl-2.5 pr-1.5 text-[12px] font-semibold text-ink">
+                          {t.name}
+                          <button onClick={() => setEditTerm({ yearId: y.id, term: t })} className="cursor-pointer rounded p-0.5 text-soft hover:bg-pine-100 hover:text-pine-700"><Pencil className="h-3 w-3" /></button>
+                          <button onClick={() => setConfirmDeleteTerm(t)} className="cursor-pointer rounded p-0.5 text-soft hover:bg-rust-100 hover:text-rust-600"><Trash2 className="h-3 w-3" /></button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </Panel>
+            );
+          })}
+        </div>
+      )}
+
+      {editYear && <YearModal existing={editYear === "new" ? null : editYear} onClose={() => setEditYear(null)} />}
+      {editTerm && <TermModal yearId={editTerm.yearId} existing={editTerm.term === "new" ? null : editTerm.term} onClose={() => setEditTerm(null)} />}
+
+      {confirmDeleteYear && (
+        <Modal title="Delete academic year?" kicker={confirmDeleteYear.name} onClose={() => setConfirmDeleteYear(null)}
+          footer={<><Btn variant="ghost" onClick={() => setConfirmDeleteYear(null)}>Cancel</Btn><Btn variant="danger" onClick={() => removeYear(confirmDeleteYear)}><Trash2 className="h-4 w-4" /> Delete</Btn></>}>
+          <p className="text-[13px] text-soft">This also removes its terms. This can't be undone.</p>
+        </Modal>
+      )}
+      {confirmDeleteTerm && (
+        <Modal title="Delete term?" kicker={confirmDeleteTerm.name} onClose={() => setConfirmDeleteTerm(null)}
+          footer={<><Btn variant="ghost" onClick={() => setConfirmDeleteTerm(null)}>Cancel</Btn><Btn variant="danger" onClick={() => removeTerm(confirmDeleteTerm)}><Trash2 className="h-4 w-4" /> Delete</Btn></>}>
+          <p className="text-[13px] text-soft">This can't be undone.</p>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function YearModal({ existing, onClose }: { existing: AcademicYear | null; onClose: () => void }) {
+  const { db, currentUser, update, toast } = useApp();
+  const [name, setName] = useState(existing?.name ?? "");
+  const [start, setStart] = useState(existing?.start ?? todayISO());
+  const [end, setEnd] = useState(existing?.end ?? todayISO());
+  const [makeActive, setMakeActive] = useState(existing?.active ?? db.years.length === 0);
+
+  const save = async () => {
+    if (!name.trim()) { toast("Give the academic year a name, e.g. 2027/28.", "warn"); return; }
+    if (!start || !end || end <= start) { toast("End date must be after the start date.", "warn"); return; }
+    const errors = await update((d) => {
+      if (makeActive) d.years.forEach((y) => { y.active = false; });
+      if (existing) {
+        const y = d.years.find((x) => x.id === existing.id)!;
+        y.name = name.trim(); y.start = start; y.end = end; y.active = makeActive || y.active;
+        pushAudit(d, currentUser, "year.update", name.trim());
+      } else {
+        d.years.push({ id: uid(), name: name.trim(), start, end, active: makeActive });
+        pushAudit(d, currentUser, "year.create", name.trim());
+      }
+    });
+    if (errors.length) { toast(describeSyncErrors(errors), "warn"); return; }
+    toast(existing ? "Academic year updated." : "Academic year created.");
+    onClose();
+  };
+
+  return (
+    <Modal title={existing ? `Edit ${existing.name}` : "New academic year"} kicker="Academic calendar" onClose={onClose}
+      footer={<><Btn variant="ghost" onClick={onClose}>Cancel</Btn><Btn onClick={save}><Save className="h-4 w-4" /> Save</Btn></>}>
+      <div className="space-y-3">
+        <Field label="Name" required><TextInput value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. 2027/28" /></Field>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Start date" required><TextInput type="date" value={start} onChange={(e) => setStart(e.target.value)} /></Field>
+          <Field label="End date" required><TextInput type="date" value={end} onChange={(e) => setEnd(e.target.value)} /></Field>
+        </div>
+        <label className="flex cursor-pointer items-center gap-2 text-[12.5px] font-semibold text-ink">
+          <input type="checkbox" checked={makeActive} onChange={(e) => setMakeActive(e.target.checked)} className="h-4 w-4 rounded border-mist" />
+          Make this the active academic year
+        </label>
+        {makeActive && <p className="text-[11.5px] text-soft">This deactivates whichever year is currently active.</p>}
+      </div>
+    </Modal>
+  );
+}
+
+function TermModal({ yearId, existing, onClose }: { yearId: string; existing: Term | null; onClose: () => void }) {
+  const { db, currentUser, update, toast } = useApp();
+  const [name, setName] = useState(existing?.name ?? "");
+  const [seq, setSeq] = useState(existing?.seq ?? (db.terms.filter((t) => t.yearId === yearId).length + 1));
+
+  const save = async () => {
+    if (!name.trim()) { toast("Give the term a name, e.g. Semester 1.", "warn"); return; }
+    const dup = db.terms.some((t) => t.yearId === yearId && t.id !== existing?.id && t.name.trim().toLowerCase() === name.trim().toLowerCase());
+    if (dup) { toast("This year already has a term with that name.", "warn"); return; }
+    const errors = await update((d) => {
+      if (existing) {
+        const t = d.terms.find((x) => x.id === existing.id)!;
+        t.name = name.trim(); t.seq = seq;
+        pushAudit(d, currentUser, "term.update", name.trim());
+      } else {
+        d.terms.push({ id: uid(), yearId, name: name.trim(), seq });
+        pushAudit(d, currentUser, "term.create", name.trim());
+      }
+    });
+    if (errors.length) { toast(describeSyncErrors(errors), "warn"); return; }
+    toast(existing ? "Term updated." : "Term added.");
+    onClose();
+  };
+
+  return (
+    <Modal title={existing ? `Edit ${existing.name}` : "Add term"} kicker={getYear(db, yearId)?.name ?? ""} onClose={onClose}
+      footer={<><Btn variant="ghost" onClick={onClose}>Cancel</Btn><Btn onClick={save}><Save className="h-4 w-4" /> Save</Btn></>}>
+      <div className="grid gap-3 sm:grid-cols-[1fr_100px]">
+        <Field label="Name" required><TextInput value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Semester 1" /></Field>
+        <Field label="Order" hint="display order"><TextInput type="number" min={1} value={seq} onChange={(e) => setSeq(Number(e.target.value) || 1)} /></Field>
+      </div>
+    </Modal>
+  );
+}
+
+/* ================= classes & subjects ================= */
 export function ClassesPage({ scoped }: { scoped?: boolean } = {}) {
   const { db, currentUser, update, toast } = useApp();
   const role = currentUser?.role ?? "admin";

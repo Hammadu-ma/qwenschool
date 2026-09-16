@@ -10,7 +10,7 @@ import {
   FamiliesPage, ProfilePage, StudentProfilePage, StudentsPage, TeachersPage, UsersPage,
 } from "./pages/people";
 import {
-  AssignmentsPage, AttendancePage, ClassesPage, FeesPage, HomeworkPage, MarkEntryPage, ReportsPage, TimetablePage,
+  AssignmentsPage, AttendancePage, AcademicYearsPage, ClassesPage, FeesPage, HomeworkPage, MarkEntryPage, ReportsPage, TimetablePage,
 } from "./pages/academics";
 import {
   AnnouncementsPage, ContactsPage, EventsPage, MessagesPage, ModerationPage, NotificationsPage,
@@ -77,6 +77,7 @@ export default function App() {
             <Route path="/admin/teachers" element={<Guard roles={["admin"]} required="Administrator"><TeachersPage /></Guard>} />
             <Route path="/admin/families" element={<Guard roles={["admin"]} required="Administrator"><FamiliesPage /></Guard>} />
             <Route path="/admin/classes" element={<Guard roles={["admin"]} required="Administrator"><ClassesPage /></Guard>} />
+            <Route path="/admin/academic-years" element={<Guard roles={["admin"]} required="Administrator"><AcademicYearsPage /></Guard>} />
             <Route path="/admin/timetable" element={<Guard roles={["admin"]} required="Administrator"><TimetablePage /></Guard>} />
             <Route path="/admin/marks" element={<Guard roles={["admin"]} required="Administrator"><MarkEntryPage /></Guard>} />
             <Route path="/admin/assignments" element={<Guard roles={["admin"]} required="Administrator"><AssignmentsPage /></Guard>} />
