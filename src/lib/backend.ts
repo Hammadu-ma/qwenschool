@@ -480,64 +480,6 @@ export async function hydrate(): Promise<{ db: DB; mode: DbMode; schemaMissing: 
 }
 
 /* =========================================================================
-   realtime — live chat updates
-   ========================================================================= */
-
-/**
- * Subscribes to Postgres changes on the tables the chat system touches
- * (messages, conversations, and who's in them) and calls `onChange` — with
- * no arguments, deliberately — whenever any of them change, for ANY
- * conversation, not just the one currently open. The caller (store.tsx)
- * responds by re-running hydrateGroup("messaging", …), which reuses the
- * exact same mapping/shaping logic as a normal load instead of this file
- * trying to hand-patch individual rows into the in-memory shape (a much
- * larger surface for subtle bugs). RLS still governs what hydrateGroup's
- * own selects can actually read back, so a browser only ever ends up with
- * rows it was already allowed to see — this subscription is just the
- * "something changed, go re-check" signal, not a source of data itself.
- *
- * Requires `messages`, `conversations` and `conversation_participants` to
- * be added to the `supabase_realtime` publication — see migration
- * 0013_realtime_messaging.sql. If that hasn't been applied yet, `.subscribe()`
- * simply never fires and the app behaves exactly as it did before (poll on
- * navigation/mount) — no error, no broken UI, just no live updates yet.
- *
- * Returns an unsubscribe function; call it on cleanup (e.g. an effect's
- * return) so the socket closes when the app no longer needs it (sign-out,
- * unmount).
- */
-export function subscribeToMessaging(onChange: () => void): () => void {
-  if (!isSupabaseConfigured || !sb()) return () => {};
-  const channel = sb()!
-    .channel("messaging-realtime")
-    .on("postgres_changes", { event: "*", schema: "public", table: "messages" }, onChange)
-    .on("postgres_changes", { event: "*", schema: "public", table: "conversations" }, onChange)
-    .on("postgres_changes", { event: "*", schema: "public", table: "conversation_participants" }, onChange)
-    .subscribe();
-  return () => { void sb()?.removeChannel(channel); };
-}
-
-/**
- * Ephemeral "who's online right now" presence — separate from the Postgres
- * subscription above, and doesn't touch the database or need a migration at
- * all: Realtime Presence lives only on the Realtime server for as long as
- * a client is tracked in the channel. Every signed-in tab tracks its own
- * user id; `onSync` is called with the current set of online user ids
- * whenever anyone joins or leaves. Returns an unsubscribe function.
- */
-export function subscribePresence(userId: string, onSync: (onlineIds: Set<string>) => void): () => void {
-  if (!isSupabaseConfigured || !sb()) return () => {};
-  const channel = sb()!.channel("presence-online", { config: { presence: { key: userId } } });
-  channel.on("presence", { event: "sync" }, () => {
-    onSync(new Set(Object.keys(channel.presenceState())));
-  });
-  channel.subscribe((status) => {
-    if (status === "SUBSCRIBED") void channel.track({ at: new Date().toISOString() });
-  });
-  return () => { void sb()?.removeChannel(channel); };
-}
-
-/* =========================================================================
    sync — DB-diff → PostgreSQL
    ========================================================================= */
 
