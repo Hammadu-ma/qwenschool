@@ -737,6 +737,16 @@ async function syncReports(oldDB: DB, newDB: DB, errors: string[]) {
  * passwords only ever touch Supabase Auth.
  */
 async function syncProfiles(oldDB: DB, newDB: DB, errors: string[]) {
+  // Removed accounts → delete_user_account RPC (SECURITY DEFINER, gated by
+  // users.manage). Deleting a Supabase Auth user needs admin privileges the
+  // anon client never holds, so — same as creation — this has to happen
+  // server-side via a definer function, not a plain `.delete()` call.
+  for (const before of oldDB.users) {
+    if (newDB.users.some((u) => u.id === before.id)) continue;
+    const { error } = await sb()!.rpc("delete_user_account", { p_id: before.id });
+    if (error) { console.warn("[backend] delete_user_account:", error.message); errors.push(`delete for ${before.name}: ${error.message}`); }
+  }
+
   for (const u of newDB.users) {
     const before = oldDB.users.find((x) => x.id === u.id);
     if (!before) {

@@ -15,9 +15,15 @@ export const uid = () => crypto.randomUUID();
 /** Turns update()'s raw sync-error list into one clear sentence. Login-account
  *  failures (tagged "login for X: …" in backend.ts) are common and recoverable
  *  — the record itself still saved — so they're worded differently from a
- *  failure to save the record itself. */
+ *  failure to save the record itself. Account-deletion failures (tagged
+ *  "delete for X: …") get their own wording too, since — unlike every other
+ *  sync error — nothing was actually saved: the account is still live on the
+ *  server and the caller should reconnect to undo the optimistic local removal
+ *  rather than believe the "deleted" state it's showing. */
 export function describeSyncErrors(errors: string[]): string {
   if (!errors.length) return "";
+  const deleteErr = errors.find((e) => e.startsWith("delete for "));
+  if (deleteErr) return deleteErr.replace(/^delete for [^:]+: /, "");
   const core = errors.find((e) => !e.startsWith("login for "));
   if (core) return `Saved, but something didn't sync: ${core}`;
   const loginMsg = errors[0].replace(/^login for [^:]+: /, "");

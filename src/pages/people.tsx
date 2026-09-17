@@ -1071,13 +1071,26 @@ export function FamiliesPage() {
 export function UsersPage() {
   const { db, currentUser, update, toast, reconnect } = useApp();
   const [edit, setEdit] = useState<User | "new" | null>(null);
+  const [conflict, setConflict] = useState<User | null>(null);
+
+  // Route-level Guard only checks the coarse base role ("admin"), which
+  // several role profiles share (Admin, Super Admin, Coordinator, …) without
+  // all having users.manage — the same gap that let a Coordinator reach the
+  // student-login checkbox despite the server rejecting it. RolesPage and
+  // AuditPage already check their fine-grained permission internally; this
+  // page hadn't, so anyone with a base "admin" role could open it and start
+  // creating/editing/"deleting" accounts the server would just reject.
+  // (Placed after every hook in the component — an early return before a
+  // useState call would break React's rule that hooks run in the same order
+  // on every render.)
+  if (!hasPermission(db, currentUser, "users.manage")) {
+    return <AccessDenied required="users.manage" reason="Your role doesn't include account administration. Ask an administrator to make changes here." />;
+  }
 
   const blank: User = { id: "", name: "", username: "", password: "", role: "student", roleId: "student", status: "active", createdAt: todayISO() };
   const draft = edit === "new" ? blank : edit;
 
   const set = (patch: Partial<User>) => setEdit((p) => (p && p !== "new" ? { ...p, ...patch } : p === "new" ? { ...blank, ...patch } : p));
-
-  const [conflict, setConflict] = useState<User | null>(null);
 
   const finalizeSave = async (loginUsername: string, loginPassword: string, replaceId?: string) => {
     if (!draft) return;
@@ -1124,13 +1137,20 @@ export function UsersPage() {
     toast(u.status === "active" ? `${u.name} disabled — their next request is rejected.` : `${u.name} re-activated.`);
   };
 
-  const removeUser = (u: User) => {
+  const removeUser = async (u: User) => {
     if (u.id === currentUser?.id) { toast("You can't delete your own account.", "warn"); return; }
     if (u.role === "admin" && db.users.filter((x) => x.role === "admin" && x.status === "active").length <= 1) {
       toast("The school needs at least one active administrator.", "warn"); return;
     }
-    update((d) => { d.users = d.users.filter((x) => x.id !== u.id); });
-    toast("User deleted.");
+    const errors = await update((d) => { d.users = d.users.filter((x) => x.id !== u.id); });
+    if (errors.length) {
+      // Nothing was actually removed server-side — undo the optimistic local
+      // removal so the list doesn't keep showing an account that's still live.
+      toast(describeSyncErrors(errors), "warn");
+      await reconnect();
+    } else {
+      toast("User deleted.");
+    }
   };
 
   const relLabel = (u: User) => {
