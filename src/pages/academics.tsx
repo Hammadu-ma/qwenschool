@@ -1683,8 +1683,8 @@ function ReportCardBody({ student, publishedOnly }: { student: Student; publishe
       <div className="mb-3"><Tabs tabs={[{ id: "summary", label: "Summary", icon: <FileBarChart2 className="h-3.5 w-3.5" /> }, { id: "detailed", label: "Detailed", icon: <Table2 className="h-3.5 w-3.5" /> }]} active={tab} onChange={(id) => setTab(id as any)} /></div>
 
       {tab === "summary" ? (
-        <Panel className="overflow-hidden">
-          <table className="w-full">
+        <Panel className="overflow-x-auto">
+          <table className="w-full min-w-[560px]">
             <thead className="border-b border-mist bg-paper/60"><tr><th className={thCls()}>Subject</th><th className={thCls()}>Period</th><th className={`${thCls()} text-center`}>Total</th><th className={`${thCls()} text-center`}>%</th><th className={`${thCls()} text-center`}>Grade</th></tr></thead>
             <tbody className="divide-y divide-mist/70">
               {results.map((r, i) => {
@@ -1711,7 +1711,8 @@ function ReportCardBody({ student, publishedOnly }: { student: Student; publishe
                 <span className="flex items-center gap-2 text-[12.5px] font-bold text-ink"><span className="h-2.5 w-2.5 rounded-full" style={{ background: r.subject?.color }} /> {r.subject?.name} <span className="font-normal text-soft">· {r.st.period}</span></span>
                 <span className="font-mono text-[12.5px] font-bold text-pine-800">{r.calc.complete ? `${fmt1(r.calc.total)} (${fmt1(r.calc.pct)}%)` : "Incomplete"}</span>
               </div>
-              <table className="w-full">
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[420px]">
                 <thead className="border-b border-mist bg-paper/40"><tr><th className={thCls()}>Assessment</th><th className={`${thCls()} text-center`}>Max</th><th className={`${thCls()} text-center`}>Weight</th><th className={`${thCls()} text-center`}>Score</th></tr></thead>
                 <tbody className="divide-y divide-mist/70">
                   {r.st.items.map((it) => (
@@ -1724,6 +1725,7 @@ function ReportCardBody({ student, publishedOnly }: { student: Student; publishe
                   ))}
                 </tbody>
               </table>
+              </div>
             </Panel>
           ))}
           {results.length === 0 && <Panel><EmptyState icon={<Table2 className="h-5 w-5" />} title="No published results yet" body="Results appear here once the office publishes them." /></Panel>}
@@ -1751,6 +1753,7 @@ export function FeesPage() {
   const [openStudent, setOpenStudent] = useState<Student | null>(null);
   const [reviewRequest, setReviewRequest] = useState<PaymentRequest | null>(null);
   const [bankOpen, setBankOpen] = useState(false);
+  const [bulkOpen, setBulkOpen] = useState(false);
   const [bankDraft, setBankDraft] = useState({ bankName: "", accountName: "", accountNumber: "", branch: "" });
 
   const pendingRequests = db.paymentRequests.filter((r) => r.status === "pending");
@@ -1793,6 +1796,7 @@ export function FeesPage() {
         <Field label="Class" className="w-36"><Select value={classId} onChange={(e) => { setClassId(e.target.value); setSectionId(""); }}><option value="">All</option>{db.classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</Select></Field>
         <Field label="Section" className="w-28"><Select value={sectionId} onChange={(e) => setSectionId(e.target.value)} disabled={!classId}><option value="">All</option>{cls?.sections.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</Select></Field>
         <Field label="Search" className="w-44"><TextInput value={q} onChange={(e) => setQ(e.target.value)} placeholder="Student name…" /></Field>
+        {canManage && <Btn variant="gold" onClick={() => setBulkOpen(true)}><Plus className="h-4 w-4" /> Bulk add fee item</Btn>}
       </PageHead>
 
       {!groupsLoaded ? (
@@ -1832,8 +1836,8 @@ export function FeesPage() {
         </Panel>
       )}
 
-      <Panel className="anim-rise overflow-hidden">
-        <table className="w-full">
+      <Panel className="anim-rise overflow-x-auto">
+        <table className="w-full min-w-[640px]">
           <thead className="border-b border-mist bg-paper/60"><tr><th className={thCls()}>Student</th><th className={thCls()}>Section</th><th className={`${thCls()} text-center`}>Billed</th><th className={`${thCls()} text-center`}>Paid</th><th className={`${thCls()} text-center`}>Outstanding</th><th className={thCls()}></th></tr></thead>
           <tbody className="divide-y divide-mist/70">
             {roster.map((s) => {
@@ -1891,7 +1895,86 @@ export function FeesPage() {
 
       {openStudent && <FeeLedgerModal student={openStudent} canManage={canManage} onClose={() => setOpenStudent(null)} />}
       {reviewRequest && <ReviewPaymentRequestModal request={reviewRequest} onClose={() => setReviewRequest(null)} />}
+      {bulkOpen && <BulkFeeModal onClose={() => setBulkOpen(false)} />}
     </div>
+  );
+}
+
+/** Admin bulk action: create the same fee item (label, amount, due date) for
+ *  every student in a chosen class/section in one go, instead of opening
+ *  each student's ledger individually. Scope narrows live as class/section
+ *  are picked, and any student can be unchecked from the resulting list
+ *  before it's created — so it still covers "just these few" without a
+ *  separate individual flow. */
+function BulkFeeModal({ onClose }: { onClose: () => void }) {
+  const { db, currentUser, update, toast } = useApp();
+  const [label, setLabel] = useState("");
+  const [amount, setAmount] = useState(0);
+  const [due, setDue] = useState(todayISO());
+  const [classId, setClassId] = useState("");
+  const [sectionId, setSectionId] = useState("");
+  const [excluded, setExcluded] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const cls = getClass(db, classId);
+
+  const scoped = db.students.filter((s) => {
+    if (!s.enrollment) return false;
+    if (classId && s.enrollment.classId !== classId) return false;
+    if (sectionId && s.enrollment.sectionId !== sectionId) return false;
+    return true;
+  });
+  const targets = scoped.filter((s) => !excluded.has(s.id));
+
+  const toggle = (id: string) => setExcluded((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+
+  const submit = () => {
+    if (!label.trim() || amount <= 0) { toast("Give the fee a label and a positive amount.", "warn"); return; }
+    if (targets.length === 0) { toast("No students in scope — pick a class or section with students in it.", "warn"); return; }
+    setBusy(true);
+    update((d) => {
+      targets.forEach((s) => {
+        d.fees.push({ id: uid(), studentId: s.id, label: label.trim(), amount, paid: 0, due, payments: [] });
+      });
+      pushAudit(d, currentUser, "fee.bulk_create", `${label.trim()} · ${targets.length} student${targets.length !== 1 ? "s" : ""}`,
+        `Br ${amount} each${cls ? ` · ${cls.name}${sectionId ? ` ${db.classes.find((c) => c.id === classId)?.sections.find((sec) => sec.id === sectionId)?.name ?? ""}` : ""}` : ""}`);
+    });
+    toast(`Added "${label.trim()}" to ${targets.length} student${targets.length !== 1 ? "s" : ""}.`);
+    setBusy(false);
+    onClose();
+  };
+
+  return (
+    <Modal title="Bulk add fee item" kicker="Applies to every student in the scope you pick" onClose={onClose} wide
+      footer={<><Btn variant="ghost" onClick={onClose}>Cancel</Btn><Btn onClick={submit} busy={busy}><Save className="h-4 w-4" /> Add to {targets.length} student{targets.length !== 1 ? "s" : ""}</Btn></>}>
+      <div className="grid gap-2 sm:grid-cols-3">
+        <Field label="Label" required><TextInput value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. Tuition — Term 2" /></Field>
+        <Field label="Amount" required><input type="number" min={0} value={amount} onChange={(e) => setAmount(Number(e.target.value) || 0)} className="w-full rounded-lg border border-mist bg-card px-3 py-2 text-[13.5px]" /></Field>
+        <Field label="Due date" required><TextInput type="date" value={due} onChange={(e) => setDue(e.target.value)} /></Field>
+      </div>
+
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        <Field label="Class"><Select value={classId} onChange={(e) => { setClassId(e.target.value); setSectionId(""); setExcluded(new Set()); }}><option value="">Whole school</option>{db.classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</Select></Field>
+        <Field label="Section"><Select value={sectionId} onChange={(e) => { setSectionId(e.target.value); setExcluded(new Set()); }} disabled={!classId}><option value="">All sections</option>{cls?.sections.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</Select></Field>
+      </div>
+
+      <div className="mt-3 rounded-lg border border-mist">
+        <div className="flex items-center justify-between border-b border-mist bg-paper/60 px-3 py-2">
+          <p className="text-[11px] font-bold uppercase tracking-wider text-soft">{scoped.length} student{scoped.length !== 1 ? "s" : ""} in scope</p>
+          {scoped.length > 0 && <button onClick={() => setExcluded(excluded.size ? new Set() : new Set(scoped.map((s) => s.id)))} className="cursor-pointer text-[11.5px] font-bold text-pine-700 hover:underline">{excluded.size ? "Select all" : "Deselect all"}</button>}
+        </div>
+        <div className="max-h-56 overflow-y-auto">
+          {scoped.map((s) => (
+            <label key={s.id} className="flex cursor-pointer items-center gap-2.5 border-b border-mist/60 px-3 py-2 text-[12.5px] last:border-0 hover:bg-paper/40">
+              <input type="checkbox" checked={!excluded.has(s.id)} onChange={() => toggle(s.id)} className="h-4 w-4 rounded border-mist accent-pine-700" />
+              <Avatar student={s} size={22} />
+              <span className="font-medium text-ink">{fullName(s)}</span>
+              <span className="ml-auto text-soft">{s.enrollment ? sectionShort(db, s.enrollment.classId, s.enrollment.sectionId) : "—"}</span>
+            </label>
+          ))}
+          {scoped.length === 0 && <p className="px-3 py-6 text-center text-[12px] text-soft">No enrolled students match this scope.</p>}
+        </div>
+      </div>
+    </Modal>
   );
 }
 
