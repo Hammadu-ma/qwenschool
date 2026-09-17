@@ -13,7 +13,13 @@ export default defineConfig({
           // Core framework: rarely changes, cached long-term by the browser
           // across deploys instead of being re-downloaded with every route.
           "vendor-react": ["react", "react-dom", "react-router-dom"],
-          "vendor-supabase": ["@supabase/supabase-js", "@tanstack/react-query"],
+          // @supabase/supabase-js is deliberately NOT here any more. Nothing
+          // in src/ imports it — the browser talks to /api, and the library
+          // lives server-side in api/. Naming it in manualChunks would drag
+          // ~120KB of unused client back into the bundle (and, depending on
+          // the Rollup version, fail the build outright because the module
+          // isn't in the graph).
+          "vendor-query": ["@tanstack/react-query"],
         },
       },
     },

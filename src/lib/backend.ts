@@ -42,20 +42,43 @@ export type DbMode = "live" | "local" | "off";
  *             which looked like data loss / being logged out on refresh.
  */
 export async function checkSchema(): Promise<DbMode | "missing" | "error"> {
-  if (!isSupabaseConfigured) return "off";
   try {
-    // Probes through the API rather than PostgREST: get_reference is the
-    // smallest allowlisted read there is, and a "not found" from it means
-    // the migrations haven't been applied.
-    const { error } = await sb()!.rpc("get_reference", {});
-    if (!error) return "live";
-    const code = (error as { code?: string }).code ?? "";
-    const msg = error.message ?? "";
-    if (code === "PGRST205" || code === "42P01" || /does not exist|Could not find the table/i.test(msg)) return "missing";
-    console.warn("[backend] schema probe failed:", msg);
+    // ---------------------------------------------------------------------
+    // THIS PROBE MUST NOT REQUIRE A SESSION.
+    //
+    // It previously called an allowlisted RPC, which the API answers with 401
+    // when nobody is signed in. On a cold load that is always the case — so
+    // the probe reported "error", hydrateCore() reported mode "off", and
+    // store.tsx's login() refuses to run unless mode is "live". The result
+    // was a deadlock: you could not sign in because the app believed it
+    // wasn't connected, and it could not become connected because signing in
+    // was blocked. That is the "never connects to Supabase" symptom.
+    //
+    // /api/health is unauthenticated by design and reports which link in the
+    // chain is broken, so connectivity is established before, and
+    // independently of, anyone signing in.
+    // ---------------------------------------------------------------------
+    const res = await fetch("/api/health", { credentials: "same-origin" });
+    const health = (await res.json().catch(() => null)) as
+      | { ok?: boolean; stage?: string; problem?: string; fix?: string }
+      | null;
+
+    if (!health) {
+      console.warn("[backend] /api/health returned nothing — is the api/ directory deployed?");
+      return "error";
+    }
+    if (health.ok) return "live";
+
+    // Surfaced in full: this is the one message that tells an operator what
+    // to actually change, and swallowing it is what made this hard to debug.
+    console.error(
+      `[backend] backend not ready (${health.stage}): ${health.problem}\n${health.fix ?? ""}`
+    );
+
+    if (health.stage === "migrations") return "missing";
     return "error";
   } catch (e) {
-    console.warn("[backend] schema probe threw:", e);
+    console.warn("[backend] health probe threw:", e);
     return "error";
   }
 }
@@ -462,6 +485,21 @@ export async function hydrateCore(): Promise<{ db: DB; mode: DbMode; schemaMissi
   // had (cached live data, current session) instead of swapping in the fake
   // seed and dropping the user's session.
   if (probe === "error") return { db: seed, mode: "off", schemaMissing: false, transientError: true };
+
+  // Connected, but nobody is signed in yet. That is the normal state of the
+  // login screen, and it is NOT a failure — report "live" with an empty
+  // database so the login form is enabled. Fetching data before there is a
+  // session would only produce 401s.
+  if (!(await apiSession())) {
+    const empty = buildSeed();
+    empty.students = []; empty.users = []; empty.teachers = []; empty.enrollments = [];
+    empty.structures = []; empty.assessmentMarks = {}; empty.submissions = []; empty.grading = [];
+    empty.attendance = []; empty.fees = []; empty.paymentRequests = []; empty.homework = [];
+    empty.timetable = []; empty.announcements = []; empty.conversations = []; empty.messages = [];
+    empty.notifications = []; empty.events = []; empty.audit = []; empty.reports = [];
+    knownLive = true;
+    return { db: empty, mode: "live", schemaMissing: false, transientError: false };
+  }
 
   const boot = await hydrateCoreViaBootstrap(seed);
   const { db, remote } = boot ?? await hydrateCoreViaTables(seed);

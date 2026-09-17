@@ -92,6 +92,9 @@ const READ_FUNCTIONS = new Set([
   "get_bootstrap", "get_reference", "my_scope", "list_students", "get_student_detail",
   "get_marksheet", "get_register", "get_attendance_summary", "list_fees",
   "list_conversations", "list_messages", "list_notifications", "list_audit",
+  // Legacy whole-database reads. Listed so they are coalesced like any other
+  // read — several components booting at once must not each trigger one.
+  "get_app_bootstrap", "get_app_snapshot",
 ]);
 
 /**

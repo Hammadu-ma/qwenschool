@@ -4,12 +4,7 @@
   "outputDirectory": "dist",
   "framework": "vite",
 
-  "functions": {
-    "api/**/*.ts": {
-      "memory": 256,
-      "maxDuration": 15
-    }
-  },
+  "_comment_functions": "No `functions` block. Every endpoint declares `export const config = { runtime: 'edge' }`, and the memory/maxDuration keys are Node-runtime options that Vercel rejects or ignores for Edge Functions. The glob also matched api/_lib/*.ts, which are shared modules with no default export, not endpoints.",
 
   "headers": [
     {

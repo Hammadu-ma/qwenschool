@@ -19,7 +19,7 @@ export const config = { runtime: "edge" };
 export default async function handler(req: Request): Promise<Response> {
   const bad = methodGuard(req, "POST");
   if (bad) return bad;
-  if (!originAllowed(req.headers.get("origin"))) {
+  if (!originAllowed(req)) {
     return fail("forbidden", "Request origin not allowed.");
   }
   if (!csrfValid(req)) return fail("forbidden", "Invalid request token.");

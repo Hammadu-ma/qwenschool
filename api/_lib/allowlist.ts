@@ -227,6 +227,27 @@ export const RPC_ALLOWLIST: Record<string, RpcSpec> = {
      ---------------------------------------------------------------------- */
   get_app_snapshot: { read: true, rateLimit: 10, args: {} },
 
+  /* ----------------------------------------------------------------------
+     Also deprecated, and the reason the app reported itself unable to
+     connect: hydrateCore() in src/lib/backend.ts calls get_app_bootstrap on
+     the boot path, and it was never published here — so the very first
+     request of every session came back 404 "Unknown operation". Publishing
+     it restores the fast boot path. It goes away with the legacy read path.
+     ---------------------------------------------------------------------- */
+  get_app_bootstrap: { read: true, rateLimit: 30, args: {} },
+
+  /* Used by the notification write path in backend.ts. */
+  notify_users: {
+    read: false,
+    rateLimit: 60,
+    args: {
+      p_ids: { type: "string[]" },
+      p_type: { type: "string", maxLength: 40 },
+      p_title: { type: "string", maxLength: 200 },
+      p_body: { type: "string", maxLength: 2000 },
+    },
+  },
+
   /* ---------- year lifecycle (admin) ---------- */
   create_academic_year: {
     read: false,

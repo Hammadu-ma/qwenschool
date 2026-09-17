@@ -62,18 +62,46 @@ export const env = {
 };
 
 /**
- * Same-origin enforcement. The session cookie is SameSite=Strict, which
- * already stops the browser sending it cross-site, but an explicit Origin
- * check costs nothing and covers the cases SameSite doesn't (older clients,
- * non-browser callers replaying a stolen cookie).
+ * Same-origin enforcement.
  *
- * In development, when ALLOWED_ORIGIN is unset, any localhost origin passes.
+ * THIS IS THE FIX FOR "the API returns 403 for everything after deploying".
+ *
+ * The previous version compared the Origin header against an ALLOWED_ORIGIN
+ * environment variable and rejected anything else. That is correct in
+ * principle and a trap in practice: if the variable is unset, or set to the
+ * production URL while you are testing a preview deployment, or set to the
+ * apex domain while the browser is on www, then EVERY request is refused
+ * before authentication even runs — and the app reports itself as unable to
+ * connect, with nothing in the UI hinting that the cause is a string mismatch
+ * on the server.
+ *
+ * The robust rule doesn't need a variable at all. A same-origin request is,
+ * by definition, one whose Origin equals the scheme and host the request
+ * itself arrived on. The server already knows both, so it can check without
+ * being told. Vercel preview URLs, custom domains, www and apex all just work,
+ * and the check is no weaker — an attacker's page still sends its own origin.
+ *
+ * ALLOWED_ORIGIN is now purely additive: set it only if a genuinely different
+ * origin must call this API (a separate admin front-end, say). Leaving it
+ * unset is the normal, correct configuration.
  */
-export function originAllowed(origin: string | null): boolean {
-  if (!origin) return !env.isProduction; // same-origin fetches may omit it
-  const allowed = env.allowedOrigins;
-  if (allowed.length === 0) {
-    return !env.isProduction && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
-  }
-  return allowed.includes(origin);
+export function originAllowed(req: Request): boolean {
+  const origin = req.headers.get("origin");
+
+  // Same-site navigations and some same-origin POSTs omit Origin entirely.
+  // Sec-Fetch-Site, which browsers send and pages cannot forge, resolves the
+  // ambiguity; when neither header is present the caller isn't a browser, and
+  // the session cookie is SameSite=Strict so a cross-site replay wouldn't have
+  // carried credentials anyway.
+  const fetchSite = req.headers.get("sec-fetch-site");
+  if (!origin) return fetchSite === null || fetchSite === "same-origin" || fetchSite === "none";
+
+  // The origin this request actually arrived on. x-forwarded-host is what
+  // Vercel sets behind its proxy; host is the fallback for local dev.
+  const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
+  const proto = req.headers.get("x-forwarded-proto") ?? (env.isProduction ? "https" : "http");
+  if (host && origin === `${proto}://${host}`) return true;
+
+  // Optional extra origins, for a front-end deployed somewhere else.
+  return env.allowedOrigins.includes(origin);
 }
