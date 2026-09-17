@@ -46,6 +46,12 @@ html,
 body {
   margin: 0;
   min-height: 100%;
+  /* Safety net: nothing in the app should ever cause the page itself to
+     scroll sideways on mobile (long emails, account numbers, etc. should
+     wrap or truncate instead) — this guarantees it even if something slips
+     through. */
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 body {
@@ -55,6 +61,17 @@ body {
   background-size: 22px 22px;
   color: var(--color-ink);
   -webkit-font-smoothing: antialiased;
+}
+
+/* Any long, unbroken run of characters (emails, phone/account numbers,
+   usernames) should wrap inside its box instead of forcing that box —
+   and the whole page — wider than the viewport. */
+p,
+dd,
+span,
+td,
+li {
+  overflow-wrap: anywhere;
 }
 
 .font-display {

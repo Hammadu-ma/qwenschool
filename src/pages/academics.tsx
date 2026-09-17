@@ -2150,7 +2150,7 @@ function FeeLedgerModal({ student, canManage, onClose }: { student: Student; can
   return (
     <Modal title={fullName(student)} kicker="Fee ledger" onClose={onClose} wide
       footer={<><Btn variant="ghost" onClick={onClose}>Close</Btn>{canManage && <Btn variant="gold" onClick={() => setAddOpen(true)}><Plus className="h-4 w-4" /> Add fee item</Btn>}</>}>
-      <div className="mb-3 grid grid-cols-3 gap-2">
+      <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
         <div className="rounded-lg bg-paper p-2.5 text-center"><p className="font-mono text-[16px] font-extrabold text-ink">{stats.billed.toLocaleString()}</p><p className="text-[10.5px] font-bold uppercase text-soft">Billed</p></div>
         <div className="rounded-lg bg-paper p-2.5 text-center"><p className="font-mono text-[16px] font-extrabold text-pine-700">{stats.paid.toLocaleString()}</p><p className="text-[10.5px] font-bold uppercase text-soft">Paid</p></div>
         <div className="rounded-lg bg-paper p-2.5 text-center"><p className={`font-mono text-[16px] font-extrabold ${stats.outstanding > 0 ? "text-rust-600" : "text-ink"}`}>{stats.outstanding.toLocaleString()}</p><p className="text-[10.5px] font-bold uppercase text-soft">Outstanding</p></div>
