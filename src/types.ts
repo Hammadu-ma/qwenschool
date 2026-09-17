@@ -258,6 +258,48 @@ export interface FeeItem {
   payments: Payment[];
 }
 
+/** A bank account guardians can transfer fees into manually. Admin-managed. */
+export interface BankAccount {
+  id: ID;
+  bankName: string;
+  accountName: string;
+  accountNumber: string;
+  branch?: string;
+  note?: string;
+}
+
+export type PaymentRequestStatus = "pending" | "approved" | "rejected";
+
+/**
+ * A guardian-submitted manual bank transfer: they pick a fee item and one of
+ * the school's bank accounts, pay outside the app, then upload the receipt
+ * here. It sits "pending" until an admin reviews the receipt and approves it
+ * — only then does it turn into a real Payment on the fee item.
+ */
+export interface PaymentRequest {
+  id: ID;
+  studentId: ID;
+  feeItemId: ID;
+  amount: number;
+  bankAccountId: ID;
+  bankName: string;
+  /** Sender's own reference/slip number, if they have one. */
+  reference?: string;
+  /** R2 object key (see src/lib/storage.ts). Present once uploaded to storage. */
+  receiptPath?: string;
+  /** Offline/demo-mode fallback only, when no Supabase project is connected. */
+  receiptDataUrl?: string;
+  receiptName?: string;
+  submittedBy: ID;
+  submittedByName?: string;
+  submittedAt: string;
+  status: PaymentRequestStatus;
+  reviewedBy?: ID;
+  reviewedByName?: string;
+  reviewedAt?: string;
+  reviewNote?: string;
+}
+
 /* ================= communication ================= */
 export type NoticeCategory = "Urgent" | "Academic" | "Exams" | "Event" | "General";
 
@@ -369,6 +411,8 @@ export interface AuditEntry {
 export interface Settings {
   schoolName: string;
   motto: string;
+  /** Bank accounts guardians can transfer fees into manually. */
+  bankAccounts: BankAccount[];
 }
 
 export interface Term {
@@ -397,6 +441,7 @@ export interface DB {
   grading: GradeBand[];
   attendance: AttendanceRecord[];
   fees: FeeItem[];
+  paymentRequests: PaymentRequest[];
   roles: RoleDef[];
   announcements: Announcement[];
   conversations: Conversation[];

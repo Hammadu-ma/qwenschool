@@ -477,6 +477,7 @@ export function buildSeed(): DB {
     ],
     attendance,
     fees,
+    paymentRequests: [],
     roles,
     /* Example workflow states so the approval pipeline is visible on first load. */
     submissions: [
@@ -492,6 +493,12 @@ export function buildSeed(): DB {
     notifications,
     events,
     audit,
-    settings: { schoolName: "Riverside Secondary School", motto: "Knowledge · Discipline · Service" },
+    settings: {
+      schoolName: "Riverside Secondary School",
+      motto: "Knowledge · Discipline · Service",
+      bankAccounts: [
+        { id: "bank-1", bankName: "Commercial Bank of Ethiopia", accountName: "Riverside Secondary School", accountNumber: "1000123456789", branch: "Bole Branch" },
+      ],
+    },
   };
 }

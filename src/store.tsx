@@ -156,6 +156,10 @@ export const feeStats = (db: DB, studentId: string) => {
   return { items, billed, paid, outstanding: billed - paid };
 };
 
+/** The most recent still-pending bank-transfer request against a fee item, if any. */
+export const pendingRequestFor = (db: DB, feeItemId: string) =>
+  db.paymentRequests.find((r) => r.feeItemId === feeItemId && r.status === "pending");
+
 /* ================= mark submission workflow ================= */
 export const submissionFor = (db: DB, structureId: string) =>
   db.submissions.find((s) => s.structureId === structureId);

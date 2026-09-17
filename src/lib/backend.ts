@@ -139,6 +139,19 @@ function mapAttendance(registers: any[], entries: any[]): AttendanceRecord[] {
 function mapFees(fees: any[]) {
   return fees.map((f: any) => ({ id: f.id, studentId: f.student_id, label: f.label, amount: Number(f.amount), paid: Number(f.paid), due: f.due_date, payments: f.payments ?? [] }));
 }
+function mapBankAccounts(accounts: any[]) {
+  return accounts.map((a: any) => ({ id: a.id, bankName: a.bankName ?? a.bank_name, accountName: a.accountName ?? a.account_name, accountNumber: a.accountNumber ?? a.account_number, branch: a.branch, note: a.note }));
+}
+function mapPaymentRequests(reqs: any[]) {
+  return reqs.map((r: any) => ({
+    id: r.id, studentId: r.student_id, feeItemId: r.fee_item_id, amount: Number(r.amount),
+    bankAccountId: r.bank_account_id, bankName: r.bank_name, reference: r.reference ?? undefined,
+    receiptPath: r.receipt_path ?? undefined, receiptName: r.receipt_name ?? undefined,
+    submittedBy: r.submitted_by, submittedByName: r.submitted_by_name ?? undefined, submittedAt: r.submitted_at,
+    status: r.status, reviewedBy: r.reviewed_by ?? undefined, reviewedByName: r.reviewed_by_name ?? undefined,
+    reviewedAt: r.reviewed_at ?? undefined, reviewNote: r.review_note ?? undefined,
+  }));
+}
 function mapHomework(homework: any[]) {
   return homework.map((h: any) => ({ id: h.id, yearId: h.year_id, classId: h.class_id, sectionId: h.section_id, subjectId: h.subject_id, title: h.title, description: h.description, issued: h.issued, due: h.due, submitted: h.submitted_students ?? [] }));
 }
@@ -223,7 +236,7 @@ function applyCoreRows(seed: DB, rows: CoreRows): { db: DB; remote: boolean } {
   if (schools) {
     remote = true;
     const s = schools.find((x: any) => x.id === SCHOOL_ID);
-    if (s) db.settings = { schoolName: s.name, motto: s.motto ?? "" };
+    if (s) db.settings = { schoolName: s.name, motto: s.motto ?? "", bankAccounts: mapBankAccounts(s.bank_accounts ?? []) };
   }
   if (years) db.years = years.map((y: any) => ({ id: y.id, name: y.name, start: y.start_date, end: y.end_date, active: y.is_active }));
   if (terms) db.terms = (terms as any[]).map((t) => ({ id: t.id, yearId: t.year_id, name: t.name, seq: t.seq }));
@@ -351,7 +364,7 @@ export async function hydrateCore(): Promise<{ db: DB; mode: DbMode; schemaMissi
   // until hydrateGroup() fills the field in.
   if (remote) {
     db.structures = []; db.assessmentMarks = {}; db.submissions = []; db.grading = [];
-    db.attendance = []; db.fees = []; db.homework = []; db.timetable = [];
+    db.attendance = []; db.fees = []; db.paymentRequests = []; db.homework = []; db.timetable = [];
     db.announcements = []; db.conversations = []; db.messages = [];
     db.notifications = []; db.events = []; db.audit = []; db.reports = [];
   }
@@ -391,8 +404,11 @@ export async function hydrateGroup(group: LazyGroup, base: DB): Promise<Partial<
       return registers && entries ? { attendance: mapAttendance(registers, entries) } : {};
     }
     case "fees": {
-      const fees = await sel("fee_items");
-      return fees ? { fees: mapFees(fees) } : {};
+      const [fees, paymentRequests] = await Promise.all([sel("fee_items"), sel("fee_payment_requests")]);
+      const out: Partial<DB> = {};
+      if (fees) out.fees = mapFees(fees);
+      if (paymentRequests) out.paymentRequests = mapPaymentRequests(paymentRequests);
+      return out;
     }
     case "homework": {
       const homework = await sel("homework");
@@ -517,6 +533,14 @@ function rowsOf(db: DB) {
     })),
     grade_bands: db.grading.map((g, i) => ({ id: `gb${i + 1}`, school_id: SCHOOL_ID, min_pct: g.min, max_pct: g.max, grade: g.grade, remark: g.remark, sort: i })),
     fee_items: db.fees.map((f) => ({ id: f.id, student_id: f.studentId, label: f.label, amount: f.amount, paid: f.paid, due_date: f.due, payments: f.payments ?? [] })),
+    fee_payment_requests: db.paymentRequests.map((r) => ({
+      id: r.id, student_id: r.studentId, fee_item_id: r.feeItemId, amount: r.amount,
+      bank_account_id: r.bankAccountId, bank_name: r.bankName, reference: r.reference ?? null,
+      receipt_path: r.receiptPath ?? null, receipt_name: r.receiptName ?? null,
+      submitted_by: r.submittedBy, submitted_by_name: r.submittedByName ?? null, submitted_at: r.submittedAt,
+      status: r.status, reviewed_by: r.reviewedBy ?? null, reviewed_by_name: r.reviewedByName ?? null,
+      reviewed_at: r.reviewedAt ?? null, review_note: r.reviewNote ?? null,
+    })),
     homework: db.homework.map((h) => ({ id: h.id, year_id: h.yearId, class_id: h.classId, section_id: h.sectionId, subject_id: h.subjectId, title: h.title, description: h.description, issued: h.issued, due: h.due, submitted_students: h.submitted })),
     timetable_entries: db.timetable.map((t) => ({ id: t.id, class_id: t.classId, section_id: t.sectionId, day: t.day, period: t.period, subject_id: t.subjectId, room: t.room })),
     role_defs: db.roles.map((r) => ({ id: r.id, name: r.name, description: r.description, is_system: r.system, all_permissions: r.permissions.includes("*"), applies_to: r.appliesTo, status: r.status })),
@@ -572,7 +596,7 @@ async function doSync(oldDB: DB, newDB: DB, errors: string[]): Promise<void> {
     "academic_years", "terms", "classes", "sections", "subjects", "teachers", "students",
     "teacher_assignments", "enrollments", "student_documents",
     "assessment_structures", "assessment_items", "mark_submissions", "grade_bands",
-    "fee_items", "homework", "timetable_entries", "role_defs",
+    "fee_items", "fee_payment_requests", "homework", "timetable_entries", "role_defs",
     "announcements", "conversations", "events",
   ];
   for (const table of ordered) {
@@ -583,7 +607,7 @@ async function doSync(oldDB: DB, newDB: DB, errors: string[]): Promise<void> {
 
   // settings → single schools row
   if (JSON.stringify(oldDB.settings) !== JSON.stringify(newDB.settings)) {
-    await upsert("schools", [{ id: SCHOOL_ID, name: newDB.settings.schoolName, motto: newDB.settings.motto }], undefined, errors);
+    await upsert("schools", [{ id: SCHOOL_ID, name: newDB.settings.schoolName, motto: newDB.settings.motto, bank_accounts: newDB.settings.bankAccounts ?? [] }], undefined, errors);
   }
 
   // marks (flattened triple-nested map) — keyed by structure|item|student

@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import type {
   AcademicYear, AssessmentItem, AssessmentStructure, Assignment, AttendanceStatus, DB, FeeItem, Homework,
-  PaymentMethod, SchoolClass, Section, Student, Submission, Subject, Term, TimetableEntry,
+  PaymentMethod, PaymentRequest, SchoolClass, Section, Student, Submission, Subject, Term, TimetableEntry,
 } from "../types";
 import {
   assessmentCalc, attendanceStats, childrenOf, describeSyncErrors, feeStats, fmt1, fmtDate, fullName, getClass,
@@ -18,6 +18,7 @@ import {
 } from "../store";
 import { hasPermission, isSuperAdmin, pushAudit, pushNotifications } from "../rbac";
 import { downloadCsv, drawThemedHeader, drawThemedSectionLabel, drawThemedTable, newThemedDoc } from "../lib/exportKit";
+import { getDownloadUrl } from "../lib/storage";
 import {
   Avatar, Btn, Chip, EmptyState, Field, Modal, PageHead, Panel, Select, SkeletonCards, SkeletonPanel, SkeletonRows,
   Stat, Tabs, TextArea, TextInput, tdCls, thCls,
@@ -1717,7 +1718,7 @@ function ReportCardBody({ student, publishedOnly }: { student: Student; publishe
    FEES (admin ledger + simple receipts)
    ========================================================================= */
 export function FeesPage() {
-  const { db, currentUser } = useApp();
+  const { db, currentUser, update, toast } = useApp();
   const groupsLoaded = useLazyGroups("fees");
   if (!hasPermission(db, currentUser, "fees.view")) {
     return <AccessDenied required="fees.view" reason="You don't have permission to view fee records." />;
@@ -1729,6 +1730,30 @@ export function FeesPage() {
   const [sectionId, setSectionId] = useState("");
   const [q, setQ] = useState("");
   const [openStudent, setOpenStudent] = useState<Student | null>(null);
+  const [reviewRequest, setReviewRequest] = useState<PaymentRequest | null>(null);
+  const [bankOpen, setBankOpen] = useState(false);
+  const [bankDraft, setBankDraft] = useState({ bankName: "", accountName: "", accountNumber: "", branch: "" });
+
+  const pendingRequests = db.paymentRequests.filter((r) => r.status === "pending");
+  const bankAccounts = db.settings.bankAccounts ?? [];
+
+  const addBankAccount = () => {
+    if (!bankDraft.bankName.trim() || !bankDraft.accountName.trim() || !bankDraft.accountNumber.trim()) {
+      toast("Bank, account name, and account number are all required.", "warn"); return;
+    }
+    update((d) => {
+      d.settings.bankAccounts = [...(d.settings.bankAccounts ?? []), {
+        id: uid(), bankName: bankDraft.bankName.trim(), accountName: bankDraft.accountName.trim(),
+        accountNumber: bankDraft.accountNumber.trim(), branch: bankDraft.branch.trim() || undefined,
+      }];
+    });
+    toast("Bank account added — guardians will see it when paying by transfer.");
+    setBankDraft({ bankName: "", accountName: "", accountNumber: "", branch: "" });
+  };
+  const removeBankAccount = (id: string) => {
+    update((d) => { d.settings.bankAccounts = (d.settings.bankAccounts ?? []).filter((a) => a.id !== id); });
+    toast("Bank account removed.");
+  };
 
   const roster = db.students.filter((s) => {
     if (classId && s.enrollment?.classId !== classId) return false;
@@ -1764,6 +1789,30 @@ export function FeesPage() {
         <Stat label="Outstanding" value={`Br ${totals.outstanding.toLocaleString()}`} tone="rust" icon={<Receipt className="h-4.5 w-4.5" />} />
       </div>
 
+      {canManage && pendingRequests.length > 0 && (
+        <Panel className="anim-rise mb-4 overflow-hidden border-gold-300">
+          <div className="flex items-center justify-between border-b border-mist px-4 py-3 sm:px-5">
+            <h3 className="font-display text-[14px] font-bold">Bank transfers awaiting review</h3>
+            <Chip tone="gold">{pendingRequests.length} pending</Chip>
+          </div>
+          <ul className="divide-y divide-mist/70">
+            {pendingRequests.map((r) => {
+              const st = db.students.find((x) => x.id === r.studentId);
+              const item = db.fees.find((f) => f.id === r.feeItemId);
+              return (
+                <li key={r.id} className="flex flex-wrap items-center gap-3 px-4 py-3 sm:px-5">
+                  <div className="min-w-[160px] flex-1">
+                    <p className="text-[13px] font-bold text-ink">{st ? fullName(st) : "Unknown student"} — {item?.label ?? "Fee"}</p>
+                    <p className="text-[11px] text-soft">Br {r.amount.toLocaleString()} · {r.bankName} · submitted by {r.submittedByName ?? "guardian"} · {fmtDate(r.submittedAt.slice(0, 10))}</p>
+                  </div>
+                  <Btn size="sm" variant="soft" onClick={() => setReviewRequest(r)}><Eye className="h-3.5 w-3.5" /> Review</Btn>
+                </li>
+              );
+            })}
+          </ul>
+        </Panel>
+      )}
+
       <Panel className="anim-rise overflow-hidden">
         <table className="w-full">
           <thead className="border-b border-mist bg-paper/60"><tr><th className={thCls()}>Student</th><th className={thCls()}>Section</th><th className={`${thCls()} text-center`}>Billed</th><th className={`${thCls()} text-center`}>Paid</th><th className={`${thCls()} text-center`}>Outstanding</th><th className={thCls()}></th></tr></thead>
@@ -1785,11 +1834,134 @@ export function FeesPage() {
           </tbody>
         </table>
       </Panel>
+
+      {canManage && (
+        <Panel className="anim-rise mt-4 overflow-hidden">
+          <button onClick={() => setBankOpen((v) => !v)} className="flex w-full cursor-pointer items-center justify-between px-4 py-3.5 text-left sm:px-5">
+            <h3 className="font-display text-[14px] font-bold">Bank accounts for guardian transfers</h3>
+            <Chip tone="gray">{bankAccounts.length}</Chip>
+          </button>
+          {bankOpen && (
+            <div className="border-t border-mist p-4 sm:p-5">
+              <p className="mb-3 text-[11.5px] text-soft">These are the accounts guardians see when they pay a fee by manual bank transfer.</p>
+              <div className="space-y-2">
+                {bankAccounts.map((a) => (
+                  <div key={a.id} className="flex flex-wrap items-center gap-2 rounded-lg border border-mist bg-card p-2.5">
+                    <div className="min-w-[160px] flex-1">
+                      <p className="text-[12.5px] font-bold text-ink">{a.bankName} — {a.accountName}</p>
+                      <p className="font-mono text-[11.5px] text-soft">{a.accountNumber}{a.branch ? ` · ${a.branch}` : ""}</p>
+                    </div>
+                    <button onClick={() => removeBankAccount(a.id)} className="cursor-pointer rounded p-1.5 text-soft hover:bg-rust-100 hover:text-rust-600"><Trash2 className="h-3.5 w-3.5" /></button>
+                  </div>
+                ))}
+                {bankAccounts.length === 0 && <p className="py-3 text-center text-[12px] text-soft">No accounts added yet.</p>}
+              </div>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                <TextInput value={bankDraft.bankName} onChange={(e) => setBankDraft((p) => ({ ...p, bankName: e.target.value }))} placeholder="Bank name" />
+                <TextInput value={bankDraft.accountName} onChange={(e) => setBankDraft((p) => ({ ...p, accountName: e.target.value }))} placeholder="Account holder name" />
+                <TextInput value={bankDraft.accountNumber} onChange={(e) => setBankDraft((p) => ({ ...p, accountNumber: e.target.value }))} placeholder="Account number" />
+                <TextInput value={bankDraft.branch} onChange={(e) => setBankDraft((p) => ({ ...p, branch: e.target.value }))} placeholder="Branch (optional)" />
+              </div>
+              <div className="mt-2 flex justify-end"><Btn size="sm" onClick={addBankAccount}><Plus className="h-3.5 w-3.5" /> Add account</Btn></div>
+            </div>
+          )}
+        </Panel>
+      )}
       </>
       )}
 
       {openStudent && <FeeLedgerModal student={openStudent} canManage={canManage} onClose={() => setOpenStudent(null)} />}
+      {reviewRequest && <ReviewPaymentRequestModal request={reviewRequest} onClose={() => setReviewRequest(null)} />}
     </div>
+  );
+}
+
+/** Admin decision point: view the uploaded receipt, then approve (which turns
+ *  it into a real Payment on the fee item) or reject it. */
+function ReviewPaymentRequestModal({ request, onClose }: { request: PaymentRequest; onClose: () => void }) {
+  const { db, currentUser, update, toast } = useApp();
+  const [receiptUrl, setReceiptUrl] = useState<string | undefined>(request.receiptDataUrl);
+  const [loadingReceipt, setLoadingReceipt] = useState(false);
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const student = db.students.find((x) => x.id === request.studentId);
+  const item = db.fees.find((f) => f.id === request.feeItemId);
+
+  useEffect(() => {
+    if (request.receiptPath && !receiptUrl) {
+      setLoadingReceipt(true);
+      getDownloadUrl("fee_receipt", request.studentId, request.receiptPath)
+        .then(setReceiptUrl)
+        .catch((e) => toast(`Couldn't load the receipt: ${e instanceof Error ? e.message : String(e)}`, "warn"))
+        .finally(() => setLoadingReceipt(false));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [request.receiptPath]);
+
+  const decide = (status: "approved" | "rejected") => {
+    if (!item) { toast("That fee item no longer exists.", "warn"); return; }
+    setBusy(true);
+    update((d) => {
+      const r = d.paymentRequests.find((x) => x.id === request.id);
+      if (!r || r.status !== "pending") return;
+      r.status = status;
+      r.reviewedBy = currentUser?.id;
+      r.reviewedByName = currentUser?.name;
+      r.reviewedAt = new Date().toISOString();
+      r.reviewNote = note.trim() || undefined;
+      if (status === "approved") {
+        const f = d.fees.find((x) => x.id === request.feeItemId);
+        if (f) {
+          f.paid = Math.min(f.amount, f.paid + request.amount);
+          f.payments = [...(f.payments ?? []), {
+            id: uid(), amount: request.amount, method: "bank_transfer", reference: request.reference,
+            bank: request.bankName, date: todayISO(), recordedBy: currentUser?.name,
+          }];
+        }
+      }
+      pushAudit(d, currentUser, status === "approved" ? "fee.payment.approve" : "fee.payment.reject",
+        `${item.label} · ${student ? fullName(student) : request.studentId}`,
+        `Br ${request.amount} via ${request.bankName}${note.trim() ? ` — ${note.trim()}` : ""}`);
+    });
+    toast(status === "approved" ? "Payment approved and recorded." : "Request rejected.");
+    setBusy(false);
+    onClose();
+  };
+
+  return (
+    <Modal title={`${student ? fullName(student) : "Guardian"} — ${item?.label ?? "Fee"}`} kicker="Review bank transfer receipt" onClose={onClose}
+      footer={<>
+        <Btn variant="ghost" onClick={onClose}>Close</Btn>
+        <Btn variant="soft" onClick={() => decide("rejected")} busy={busy}><UserX className="h-4 w-4" /> Reject</Btn>
+        <Btn onClick={() => decide("approved")} busy={busy}><CheckCircle2 className="h-4 w-4" /> Approve</Btn>
+      </>}>
+      <div className="grid gap-2 text-[12.5px] sm:grid-cols-2">
+        <div><span className="text-soft">Amount</span> · <span className="font-mono font-bold">Br {request.amount.toLocaleString()}</span></div>
+        <div><span className="text-soft">Bank</span> · <span className="font-bold">{request.bankName}</span></div>
+        {request.reference && <div><span className="text-soft">Reference</span> · <span className="font-mono">{request.reference}</span></div>}
+        <div><span className="text-soft">Submitted</span> · {fmtDate(request.submittedAt.slice(0, 10))} by {request.submittedByName ?? "guardian"}</div>
+      </div>
+
+      <div className="mt-3 rounded-lg border border-mist bg-paper/50 p-3">
+        <p className="mb-2 text-[10.5px] font-bold uppercase tracking-wider text-soft">Receipt</p>
+        {loadingReceipt ? (
+          <p className="text-[12px] text-soft">Loading…</p>
+        ) : receiptUrl ? (
+          /\.pdf($|\?)/i.test(receiptUrl) || (request.receiptName ?? "").toLowerCase().endsWith(".pdf") ? (
+            <a href={receiptUrl} target="_blank" rel="noopener" className="text-[12.5px] font-bold text-pine-700 underline">Open {request.receiptName ?? "receipt"} (PDF)</a>
+          ) : (
+            <a href={receiptUrl} target="_blank" rel="noopener"><img src={receiptUrl} alt="Payment receipt" className="max-h-72 w-full rounded-lg object-contain" /></a>
+          )
+        ) : (
+          <p className="text-[12px] text-soft">No receipt on file.</p>
+        )}
+      </div>
+
+      <Field label="Note (optional, shown in the audit log)" className="mt-3">
+        <TextArea value={note} onChange={(e) => setNote(e.target.value)} rows={2} placeholder="e.g. slip matches the amount and account" />
+      </Field>
+    </Modal>
   );
 }
 

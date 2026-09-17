@@ -30,7 +30,7 @@ const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 
 // Add new owner types here as the app grows (staff photos, a school logo, …).
 // Keep this list in sync with the `when` branches in the SQL functions.
-const ALLOWED_OWNER_TYPES = new Set(["student_photo", "student_document"]);
+const ALLOWED_OWNER_TYPES = new Set(["student_photo", "student_document", "fee_receipt"]);
 const MAX_UPLOAD_BYTES = 15 * 1024 * 1024; // 15 MB safety cap
 const URL_TTL_SECONDS = 300;
 

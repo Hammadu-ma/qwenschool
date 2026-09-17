@@ -4,10 +4,10 @@ import {
   BadgeCheck, Baby, BookOpen, CalendarCheck2, CreditCard, FileBarChart2, History, Inbox, KeyRound, Layers, Lock,
   FileText as Notebook, Pencil, Plus, Search, ShieldCheck, Trash2, User as UserIcon, Users, Wallet, Eye, GraduationCap, X,
 } from "lucide-react";
-import type { DB, Enrollment, Role, Student, User, UserStatus } from "../types";
+import type { DB, Enrollment, FeeItem, Role, Student, User, UserStatus } from "../types";
 import {
   assessmentCalc, attendanceStats, canSeeStudent, childrenOf, describeSyncErrors, feeStats, fmtDate, fullName, getClass, getSection,
-  getSubject, gradeFor, guardianOfStudent, homePathFor, ordinal, sectionLabel, sectionShort, shortName,
+  getSubject, gradeFor, guardianOfStudent, homePathFor, ordinal, pendingRequestFor, sectionLabel, sectionShort, shortName,
   studentAverage, studentOf, studentResults, structureRanks, teacherPairs, teacherStudentIds, teachersOfStudent,
   todayISO, uid, useApp, useLazyGroups,
 } from "../store";
@@ -15,7 +15,7 @@ import {
   Avatar, Btn, Chip, EmptyState, Field, Modal, PageHead, Panel, Ring, RoleBadge, Select, Skel, SkeletonPanel, SkeletonRows,
   Tabs, TextInput, UserAvatar, UsernameConflictModal, tdCls, thCls,
 } from "../ui";
-import { getDownloadUrl } from "../lib/storage";
+import { getDownloadUrl, isStorageConfigured, uploadFile } from "../lib/storage";
 import { AccessDenied } from "./Auth";
 import { defaultRoleIdFor, hasPermission, pushAudit } from "../rbac";
 import { IDCardModal, RegistrationWizard } from "./registration";
@@ -278,6 +278,7 @@ export function StudentProfilePage() {
   const [tab, setTab] = useState("overview");
   const [editOpen, setEditOpen] = useState(false);
   const [idCardOpen, setIdCardOpen] = useState(false);
+  const [payItem, setPayItem] = useState<FeeItem | null>(null);
 
   const s = db.students.find((x) => x.id === id);
 
@@ -510,17 +511,28 @@ export function StudentProfilePage() {
             </div>
             <div className="overflow-x-auto">
               <table className="w-full min-w-[540px]">
-                <thead className="border-b border-mist bg-paper/60"><tr><th className={thCls()}>Item</th><th className={thCls()}>Amount</th><th className={thCls()}>Paid</th><th className={thCls()}>Due</th><th className={thCls()}>Status</th></tr></thead>
+                <thead className="border-b border-mist bg-paper/60"><tr><th className={thCls()}>Item</th><th className={thCls()}>Amount</th><th className={thCls()}>Paid</th><th className={thCls()}>Due</th><th className={thCls()}>Status</th>{isGuardian && <th className={thCls()}></th>}</tr></thead>
                 <tbody className="divide-y divide-mist/70">
-                  {fees.items.map((f) => (
-                    <tr key={f.id}>
-                      <td className={`${tdCls()} font-bold text-ink`}>{f.label}</td>
-                      <td className={`${tdCls()} font-mono text-[12px]`}>ETB {f.amount.toLocaleString()}</td>
-                      <td className={`${tdCls()} font-mono text-[12px]`}>ETB {f.paid.toLocaleString()}</td>
-                      <td className={`${tdCls()} text-soft`}>{fmtDate(f.due)}</td>
-                      <td className={tdCls()}>{f.amount - f.paid > 0 ? <Chip tone="rust">ETB {(f.amount - f.paid).toLocaleString()} due</Chip> : <Chip tone="pine">Settled</Chip>}</td>
-                    </tr>
-                  ))}
+                  {fees.items.map((f) => {
+                    const pending = pendingRequestFor(db, f.id);
+                    const due = f.amount - f.paid > 0;
+                    return (
+                      <tr key={f.id}>
+                        <td className={`${tdCls()} font-bold text-ink`}>{f.label}</td>
+                        <td className={`${tdCls()} font-mono text-[12px]`}>ETB {f.amount.toLocaleString()}</td>
+                        <td className={`${tdCls()} font-mono text-[12px]`}>ETB {f.paid.toLocaleString()}</td>
+                        <td className={`${tdCls()} text-soft`}>{fmtDate(f.due)}</td>
+                        <td className={tdCls()}>
+                          {pending ? <Chip tone="gold">Pending review</Chip> : due ? <Chip tone="rust">ETB {(f.amount - f.paid).toLocaleString()} due</Chip> : <Chip tone="pine">Settled</Chip>}
+                        </td>
+                        {isGuardian && (
+                          <td className={`${tdCls()} text-right`}>
+                            {due && !pending && <Btn size="sm" variant="soft" onClick={() => setPayItem(f)}><Wallet className="h-3.5 w-3.5" /> Pay</Btn>}
+                          </td>
+                        )}
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -576,7 +588,109 @@ export function StudentProfilePage() {
 
       {editOpen && isAdmin && <RegistrationWizard student={s} onClose={() => setEditOpen(false)} />}
       {idCardOpen && <IDCardModal student={s} onClose={() => setIdCardOpen(false)} />}
+      {payItem && <PayFeeModal student={s} item={payItem} onClose={() => setPayItem(null)} />}
     </div>
+  );
+}
+
+/* Guardian self-service: pick the school's bank account, copy it, pay outside
+   the app, then upload the receipt here. Lands as a pending request — it
+   never touches fee_items.paid until an admin reviews the receipt and
+   approves it (guardians don't hold fees.manage, so they couldn't write
+   fee_items directly even if this tried to). */
+function PayFeeModal({ student, item, onClose }: { student: Student; item: FeeItem; onClose: () => void }) {
+  const { db, currentUser, update, toast } = useApp();
+  const accounts = db.settings.bankAccounts ?? [];
+  const [accountId, setAccountId] = useState(accounts[0]?.id ?? "");
+  const [reference, setReference] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const outstanding = item.amount - item.paid;
+  const account = accounts.find((a) => a.id === accountId);
+
+  const copyAccount = async () => {
+    if (!account) return;
+    try {
+      await navigator.clipboard.writeText(account.accountNumber);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      toast("Couldn't copy — select and copy the number manually.", "warn");
+    }
+  };
+
+  const submit = async () => {
+    if (!account) { toast("Choose which bank account you paid into.", "warn"); return; }
+    if (!file) { toast("Upload a photo or PDF of the receipt.", "warn"); return; }
+    setBusy(true);
+    try {
+      let receiptPath: string | undefined;
+      let receiptDataUrl: string | undefined;
+      if (isStorageConfigured) {
+        const { key } = await uploadFile({ file, ownerType: "fee_receipt", ownerId: student.id, kind: "receipt" });
+        receiptPath = key;
+      } else {
+        receiptDataUrl = await new Promise<string>((resolve, reject) => {
+          const r = new FileReader();
+          r.onload = () => resolve(String(r.result));
+          r.onerror = () => reject(new Error("Couldn't read the file."));
+          r.readAsDataURL(file);
+        });
+      }
+      update((d) => {
+        d.paymentRequests.push({
+          id: uid(), studentId: student.id, feeItemId: item.id, amount: outstanding,
+          bankAccountId: account.id, bankName: account.bankName, reference: reference.trim() || undefined,
+          receiptPath, receiptDataUrl, receiptName: file.name,
+          submittedBy: currentUser?.id ?? "", submittedByName: currentUser?.name, submittedAt: new Date().toISOString(),
+          status: "pending",
+        });
+      });
+      toast("Receipt submitted — it'll show as pending until the office confirms it.");
+      onClose();
+    } catch (e) {
+      toast(`Couldn't submit: ${e instanceof Error ? e.message : String(e)}`, "warn");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title={`Pay — ${item.label}`} kicker={`Outstanding: ETB ${outstanding.toLocaleString()}`} onClose={onClose}
+      footer={<><Btn variant="ghost" onClick={onClose}>Cancel</Btn><Btn onClick={submit} busy={busy}><Wallet className="h-4 w-4" /> Submit for review</Btn></>}>
+      {accounts.length === 0 ? (
+        <p className="py-6 text-center text-[12.5px] text-soft">No bank account is set up for transfers yet — please contact the office.</p>
+      ) : (
+        <>
+          <Field label="Pay into" required>
+            <Select value={accountId} onChange={(e) => setAccountId(e.target.value)}>
+              {accounts.map((a) => <option key={a.id} value={a.id}>{a.bankName} — {a.accountName}</option>)}
+            </Select>
+          </Field>
+          {account && (
+            <div className="mt-3 rounded-lg border border-mist bg-paper/60 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="text-[10.5px] font-bold uppercase tracking-wider text-soft">Account number</p>
+                  <p className="truncate font-mono text-[15px] font-extrabold text-ink">{account.accountNumber}</p>
+                </div>
+                <Btn size="sm" variant={copied ? "soft" : "gold"} onClick={copyAccount}>{copied ? "Copied" : "Copy"}</Btn>
+              </div>
+              <p className="mt-2 text-[11.5px] text-soft">{account.accountName}{account.branch ? ` · ${account.branch}` : ""}</p>
+              {account.note && <p className="mt-1 text-[11.5px] text-soft">{account.note}</p>}
+            </div>
+          )}
+          <p className="mt-3 text-[12px] text-soft">Transfer ETB {outstanding.toLocaleString()} using your own bank or mobile banking app, then come back and upload the receipt below.</p>
+          <Field label="Your reference / slip number" className="mt-3"><TextInput value={reference} onChange={(e) => setReference(e.target.value)} placeholder="Optional, if you have one" /></Field>
+          <Field label="Receipt" required className="mt-3">
+            <input type="file" accept="image/*,.pdf" onChange={(e) => setFile(e.target.files?.[0] ?? null)} className="w-full rounded-lg border border-mist bg-card px-3 py-2 text-[12.5px]" />
+            {file && <p className="mt-1 text-[11px] text-soft">{file.name}</p>}
+          </Field>
+        </>
+      )}
+    </Modal>
   );
 }
 
