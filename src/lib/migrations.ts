@@ -10,6 +10,8 @@ import m9 from "../../supabase/migrations/0009_lowercase_usernames.sql?raw";
 import m10 from "../../supabase/migrations/0010_academic_years_permission.sql?raw";
 import m11 from "../../supabase/migrations/0011_conversation_participants_policy.sql?raw";
 import m12 from "../../supabase/migrations/0012_student_visible_published_submissions.sql?raw";
+import m13 from "../../supabase/migrations/0013_enable_realtime_messaging.sql?raw";
+import m14 from "../../supabase/migrations/0014_file_storage.sql?raw";
 
 /**
  * The migration bundle ships inside the app as plain text. SQL DDL is not a
@@ -50,6 +52,8 @@ export const MIGRATIONS: MigrationFile[] = [
   { file: "0010_academic_years_permission.sql", title: "Adds a dedicated academic-years/terms management permission", sql: m10 },
   { file: "0011_conversation_participants_policy.sql", title: "Fix: starting a new direct conversation always failed", sql: m11 },
   { file: "0012_student_visible_published_submissions.sql", title: "Fix: students/guardians saw no grades even once published", sql: m12 },
+  { file: "0013_enable_realtime_messaging.sql", title: "Realtime — conversations update live instead of on next page load", sql: m13 },
+  { file: "0014_file_storage.sql", title: "Generic file registry + authorization functions for Cloudflare R2 storage", sql: m14 },
 ];
 
 /**

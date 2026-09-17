@@ -247,7 +247,7 @@ function applyCoreRows(seed: DB, rows: CoreRows): { db: DB; remote: boolean } {
       const activeYear = years?.find((y: any) => y.is_active)?.id;
       const current = hist.find((h) => h.yearId === activeYear) ?? hist[hist.length - 1];
       const sd: StudentDoc[] = docs.filter((d: any) => d.student_id === s.id)
-        .map((d: any) => ({ id: d.id, name: d.name, kind: d.kind, size: d.size, date: d.doc_date }));
+        .map((d: any) => ({ id: d.id, name: d.name, kind: d.kind, size: d.size, date: d.doc_date, storagePath: d.storage_path || undefined }));
       return {
         id: s.id, regId: s.reg_no,
         firstName: s.first_name, middleName: s.middle_name, lastName: s.last_name,
@@ -503,7 +503,8 @@ function rowsOf(db: DB) {
       enrolled_on: h.enrolledOn ?? null,
     }))),
     student_documents: db.students.flatMap((s) => s.documents.map((d) => ({
-      id: d.id, student_id: s.id, name: d.name, kind: d.kind, size: d.size, doc_date: d.date, storage_path: null,
+      id: d.id, student_id: s.id, name: d.name, kind: d.kind, size: d.size, doc_date: d.date,
+      storage_path: d.storagePath ?? null,
     }))),
     assessment_structures: db.structures.map((st) => ({ id: st.id, year_id: st.yearId, class_id: st.classId, subject_id: st.subjectId, term_id: termId(db, st.yearId, st.period) })),
     assessment_items: db.structures.flatMap((st) => st.items.map((i, idx) => ({ id: i.id, structure_id: st.id, name: i.name, max_mark: i.max, weight: i.weight, sort: idx }))),

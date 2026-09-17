@@ -112,7 +112,9 @@ export interface StudentDoc {
   kind: string;
   size: string;
   date: string;
-  /** Small files keep their content so they can be opened in-app. */
+  /** R2 object key (see src/lib/storage.ts). Present once uploaded to storage. */
+  storagePath?: string;
+  /** Offline/demo-mode fallback only, when no Supabase project is connected. */
   dataUrl?: string;
 }
 

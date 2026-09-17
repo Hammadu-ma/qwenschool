@@ -8,6 +8,7 @@ import type { Student, StudentDoc, User as UserAccount } from "../types";
 import { describeSyncErrors, getClass, getSection, getYear, sectionLabel, todayISO, uid, useApp } from "../store";
 import { pushAudit } from "../rbac";
 import { Btn, Chip, Field, Modal, Panel, Select, TextArea, TextInput, UsernameConflictModal } from "../ui";
+import { getDownloadDataUrl, isStorageConfigured, uploadFile, useSignedUrl } from "../lib/storage";
 
 const readAsDataUrl = (file: File) =>
   new Promise<string>((resolve, reject) => {
@@ -28,6 +29,9 @@ interface WizardProps {
 export function RegistrationWizard({ student, onClose, onSaved }: WizardProps) {
   const { db, currentUser, yearId, update, toast, reconnect } = useApp();
   const isEdit = !!student;
+  // Generated once, up front — files uploaded during the wizard (before the
+  // student row exists) need a stable id to key their storage path off of.
+  const [studentId] = useState(() => student?.id ?? uid());
   const activeYear = getYear(db, yearId) ?? db.years.find((y) => y.active);
   const yrPrefix = activeYear ? activeYear.name.slice(0, 4) : "2026";
 
@@ -57,7 +61,15 @@ export function RegistrationWizard({ student, onClose, onSaved }: WizardProps) {
     username: "",
     password: "stud123",
   });
-  const [photo, setPhoto] = useState<string | undefined>(student?.photo);
+  // `photoKey` is what actually gets saved (an R2 object key, or — offline/
+  // demo mode only — a raw data: URL). `photo` is always something an <img>
+  // can render directly: an instant local preview while an upload is in
+  // flight, falling back to a signed URL resolved for the persisted key.
+  const [photoKey, setPhotoKey] = useState<string | undefined>(student?.photo);
+  const [localPhotoPreview, setLocalPhotoPreview] = useState<string | undefined>(undefined);
+  const [photoUploading, setPhotoUploading] = useState(false);
+  const remotePhotoPreview = useSignedUrl("student_photo", studentId, photoKey);
+  const photo = localPhotoPreview ?? remotePhotoPreview;
   const [docs, setDocs] = useState<StudentDoc[]>(student?.documents ?? []);
   const [step, setStep] = useState(0);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -79,18 +91,43 @@ export function RegistrationWizard({ student, onClose, onSaved }: WizardProps) {
   const pickPhoto = async (file?: File) => {
     if (!file) return;
     if (!file.type.startsWith("image/")) { toast("Choose an image file (JPG/PNG).", "warn"); return; }
-    setPhoto(await readAsDataUrl(file));
+
+    if (!isStorageConfigured) {
+      // Offline/demo mode: no R2 behind this, keep the old inline behavior.
+      setPhotoKey(await readAsDataUrl(file));
+      return;
+    }
+
+    const localUrl = URL.createObjectURL(file);
+    setLocalPhotoPreview(localUrl);
+    setPhotoUploading(true);
+    try {
+      const { key } = await uploadFile({ file, ownerType: "student_photo", ownerId: studentId });
+      setPhotoKey(key);
+    } catch (e) {
+      toast(`Photo upload failed: ${e instanceof Error ? e.message : String(e)}`, "warn");
+      setLocalPhotoPreview(undefined);
+    } finally {
+      setPhotoUploading(false);
+    }
   };
 
   const addDocs = async (files: File[]) => {
     const items: StudentDoc[] = [];
     for (const file of files) {
-      const small = file.size < 400_000;
-      items.push({
-        id: uid(), name: file.name, kind: file.type.startsWith("image/") ? "Image" : "Document",
-        size: `${Math.max(1, Math.round(file.size / 1024))} KB`, date: todayISO(),
-        dataUrl: small ? await readAsDataUrl(file) : undefined,
-      });
+      const kind = file.type.startsWith("image/") ? "Image" : "Document";
+      const size = `${Math.max(1, Math.round(file.size / 1024))} KB`;
+      if (isStorageConfigured) {
+        try {
+          const { key } = await uploadFile({ file, ownerType: "student_document", ownerId: studentId, kind });
+          items.push({ id: uid(), name: file.name, kind, size, date: todayISO(), storagePath: key });
+        } catch (e) {
+          toast(`${file.name} failed to upload: ${e instanceof Error ? e.message : String(e)}`, "warn");
+        }
+      } else {
+        const small = file.size < 400_000;
+        items.push({ id: uid(), name: file.name, kind, size, date: todayISO(), dataUrl: small ? await readAsDataUrl(file) : undefined });
+      }
     }
     setDocs((d) => [...d, ...items]);
     if (items.length) toast(`${items.length} file(s) attached.`);
@@ -102,13 +139,13 @@ export function RegistrationWizard({ student, onClose, onSaved }: WizardProps) {
   // credentials if requested. replaceId, if set, drops that existing user
   // first (used when the admin chooses "replace" on a username conflict).
   const finalizeSave = async (loginUsername?: string, loginPassword?: string, replaceId?: string) => {
-    const id = isEdit ? student!.id : uid();
+    const id = studentId;
     const errors = await update((d) => {
       const record: Student = {
         id,
         regId: f.regId.trim(),
         firstName: f.firstName.trim(), middleName: f.middleName.trim(), lastName: f.lastName.trim(),
-        gender: f.gender, dob: f.dob, status: "active", photo,
+        gender: f.gender, dob: f.dob, status: "active", photo: photoKey,
         phone: f.phone.trim(), email: f.email.trim(), address: f.address.trim(),
         guardian: { father: f.gFather.trim(), mother: f.gMother.trim(), relation: f.gRelation, phone: f.gPhone.trim(), address: f.gAddress.trim() || f.address.trim() },
         admission: { number: f.admNo.trim(), date: f.admDate, previousSchool: f.prevSchool.trim(), type: f.admType },
@@ -280,8 +317,10 @@ export function RegistrationWizard({ student, onClose, onSaved }: WizardProps) {
                 )}
               </div>
               <div className="flex flex-col gap-2">
-                <Btn size="sm" variant="soft" onClick={() => fileRef.current?.click()}><ImagePlus className="h-3.5 w-3.5" /> {photo ? "Replace photo" : "Upload photo"}</Btn>
-                {photo && <Btn size="sm" variant="ghost" onClick={() => setPhoto(undefined)}><Trash2 className="h-3.5 w-3.5" /> Remove</Btn>}
+                <Btn size="sm" variant="soft" disabled={photoUploading} onClick={() => fileRef.current?.click()}>
+                  <ImagePlus className="h-3.5 w-3.5" /> {photoUploading ? "Uploading…" : photo ? "Replace photo" : "Upload photo"}
+                </Btn>
+                {photo && !photoUploading && <Btn size="sm" variant="ghost" onClick={() => { setPhotoKey(undefined); setLocalPhotoPreview(undefined); }}><Trash2 className="h-3.5 w-3.5" /> Remove</Btn>}
                 <p className="text-[11px] text-soft">JPG/PNG, square works best.</p>
               </div>
               <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => { pickPhoto(e.target.files?.[0]); e.target.value = ""; }} />
@@ -381,8 +420,20 @@ export function IDCardModal({ student, onClose }: { student: Student; onClose: (
   const enr = student.enrollment;
   const placement = enr ? sectionLabel(db, enr.classId, enr.sectionId) : "—";
   const guardian = student.guardian;
+  const photoUrl = useSignedUrl("student_photo", student.id, student.photo);
 
-  const downloadPdf = () => {
+  const downloadPdf = async () => {
+    let photoDataUrl: string | undefined;
+    if (student.photo) {
+      try {
+        photoDataUrl = student.photo.startsWith("data:")
+          ? student.photo
+          : await getDownloadDataUrl("student_photo", student.id, student.photo);
+      } catch {
+        toast("Couldn't load the student's photo — printing the card without it.", "warn");
+      }
+    }
+
     const W = 85.6, H = 54;
     const doc = new jsPDF({ unit: "mm", format: [W, H], orientation: "landscape" });
     const PINE: [number, number, number] = [22, 53, 42];
@@ -398,9 +449,9 @@ export function IDCardModal({ student, onClose }: { student: Student; onClose: (
     doc.setFont("helvetica", "normal"); doc.setFontSize(6);
     doc.text("STUDENT IDENTITY CARD", W / 2, 11, { align: "center" });
 
-    if (student.photo) {
-      const fmt = student.photo.includes("image/png") ? "PNG" : "JPEG";
-      try { doc.addImage(student.photo, fmt, 6, 20, 21, 26); } catch { /* unsupported image */ }
+    if (photoDataUrl) {
+      const fmt = photoDataUrl.includes("image/png") ? "PNG" : "JPEG";
+      try { doc.addImage(photoDataUrl, fmt, 6, 20, 21, 26); } catch { /* unsupported image */ }
     } else {
       doc.setDrawColor(180, 190, 182); doc.setLineWidth(0.4); doc.rect(6, 20, 21, 26);
       doc.setFontSize(7); doc.setTextColor(140, 150, 142);
@@ -461,7 +512,7 @@ export function IDCardModal({ student, onClose }: { student: Student; onClose: (
             <div className="h-[3px] bg-gold-400" />
             <div className="flex flex-1 gap-3 p-3">
               <div className="flex h-[104px] w-[84px] shrink-0 items-center justify-center overflow-hidden rounded-md border border-mist bg-paper">
-                {student.photo ? <img src={student.photo} alt="" className="h-full w-full object-cover" /> : <User className="h-8 w-8 text-soft/40" />}
+                {photoUrl ? <img src={photoUrl} alt="" className="h-full w-full object-cover" /> : <User className="h-8 w-8 text-soft/40" />}
               </div>
               <div className="min-w-0 flex-1">
                 <p className="font-display text-[15px] font-extrabold leading-tight text-ink">{student.firstName} {student.middleName} {student.lastName}</p>

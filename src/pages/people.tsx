@@ -15,6 +15,7 @@ import {
   Avatar, Btn, Chip, EmptyState, Field, Modal, PageHead, Panel, Ring, RoleBadge, Select, Skel, SkeletonPanel, SkeletonRows,
   Tabs, TextInput, UserAvatar, UsernameConflictModal, tdCls, thCls,
 } from "../ui";
+import { getDownloadUrl } from "../lib/storage";
 import { AccessDenied } from "./Auth";
 import { defaultRoleIdFor, hasPermission, pushAudit } from "../rbac";
 import { IDCardModal, RegistrationWizard } from "./registration";
@@ -271,7 +272,7 @@ function RegisterStudentModal({ onClose, onSaved }: { onClose: () => void; onSav
 
 /* ================= student profile (entity-guarded) ================= */
 export function StudentProfilePage() {
-  const { db, currentUser } = useApp();
+  const { db, currentUser, toast } = useApp();
   const groupsLoaded = useLazyGroups(["attendance", "academics", "homework", "fees"]);
   const { id } = useParams();
   const [tab, setTab] = useState("overview");
@@ -279,6 +280,21 @@ export function StudentProfilePage() {
   const [idCardOpen, setIdCardOpen] = useState(false);
 
   const s = db.students.find((x) => x.id === id);
+
+  const openDocument = async (dc: Student["documents"][number]) => {
+    if (dc.storagePath) {
+      try {
+        const url = await getDownloadUrl("student_document", id!, dc.storagePath);
+        window.open(url, "_blank", "noopener");
+      } catch (e) {
+        toast(`Couldn't open ${dc.name}: ${e instanceof Error ? e.message : String(e)}`, "warn");
+      }
+    } else if (dc.dataUrl) {
+      window.open(dc.dataUrl, "_blank", "noopener");
+    } else {
+      toast("No preview available for this file.", "warn");
+    }
+  };
   if (!s) return <AccessDenied required="A valid student id" reason="No student record matches that address." />;
 
   // ENTITY-LEVEL authorization: role alone isn't enough — the relationship must hold.
@@ -522,6 +538,9 @@ export function StudentProfilePage() {
                     <p className="text-[11px] text-soft">{dc.kind} · {dc.size} · {fmtDate(dc.date)}</p>
                   </div>
                   <Chip tone="gray">{dc.kind}</Chip>
+                  {(dc.storagePath || dc.dataUrl) && (
+                    <Btn size="sm" variant="ghost" onClick={() => openDocument(dc)}><Eye className="h-3.5 w-3.5" /> Open</Btn>
+                  )}
                 </li>
               ))}
               {s.documents.length === 0 && <li className="px-5 py-10 text-center text-[12.5px] text-soft">No documents on file.</li>}

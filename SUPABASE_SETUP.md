@@ -26,8 +26,10 @@ All schema, RLS, functions and seed data live in `supabase/migrations/`:
 | `0010_academic_years_permission.sql` | Adds a dedicated academic-years/terms management permission |
 | `0011_conversation_participants_policy.sql` | Fixes starting a new direct conversation always failing |
 | `0012_student_visible_published_submissions.sql` | Fixes students/guardians seeing no grades, even once published |
+| `0013_enable_realtime_messaging.sql` | Enables Realtime on messaging tables so conversations update live |
+| `0014_file_storage.sql` | Generic `file_objects` registry + authorization functions backing Cloudflare R2 storage (§6) |
 
-**Fastest — Supabase CLI (recommended):** applies all 12 files in one command, no browser
+**Fastest — Supabase CLI (recommended):** applies all 14 files in one command, no browser
 copy-paste at all.
 ```bash
 supabase login
@@ -37,9 +39,9 @@ supabase db push
 
 **No CLI available — in-app console, one paste:** the login page shows a "Connect the live
 database" panel when the schema isn't detected yet. Open the **Guided** tab and click
-**"Copy all 12 migrations as one script"** — it's every file concatenated in order, each wrapped
+**\"Copy all migrations as one script\"** — it's every file concatenated in order, each wrapped
 in its own transaction, so it's a single copy → paste into the SQL Editor → click Run, instead of
-repeating that eleven times. Then click **Re-check & connect**.
+repeating that once per file. Then click **Re-check & connect**.
 
 If you need to debug which specific file failed, the same panel has a "run them one at a time
 instead" toggle that copies each file individually.
@@ -110,12 +112,101 @@ Then `npm run dev` / `npm run build`. Vite inlines `VITE_*` at build time.
 | Teacher: `select` another teacher's conversation | 0 rows |
 | Student/guardian: read un-published marks | 0 rows (published only) |
 
-## 6. Storage (optional follow-up)
+## 6. File storage — Cloudflare R2
 
-Profile photos currently persist in `students.photo_path` and documents in
-`student_documents` so the flows work end-to-end. To move binaries to Supabase Storage,
-create **private** buckets `profile-photos` and `student-documents` with policies mirroring
-`can_view_student`, then upload via `supabase.storage` and store only the path.
+Student photos and documents are binary files, so they don't live in Postgres —
+`students.photo_path` and `student_documents.storage_path` each hold an **R2 object
+key** (a string), and the actual bytes live in a Cloudflare R2 bucket. The browser
+never touches R2 directly or holds an R2 credential: it asks a Supabase Edge
+Function (`r2-storage`) for a short-lived presigned URL, then uploads/downloads
+straight from R2 with that URL. This also means every future file type (staff
+photos, a school logo, receipts, …) reuses the same table (`file_objects`), the
+same edge function, and the same two SQL functions — see the comments in
+`supabase/migrations/0014_file_storage.sql`.
+
+### 6.1 Create the R2 bucket
+
+1. Cloudflare dashboard → **R2 Object Storage** → **Create bucket**.
+   - Name it something like `riverside-files`.
+   - Location: Automatic is fine.
+   - Leave it **private** (do not enable public access) — every file is served
+     through a short-lived signed URL instead.
+2. Note your **Account ID**, shown on the R2 overview page (also in the URL:
+   `dash.cloudflare.com/<ACCOUNT_ID>/r2`).
+
+### 6.2 Create an API token (S3-compatible credentials)
+
+1. On the R2 overview page → **Manage API Tokens** → **Create API Token**.
+2. Permissions: **Object Read & Write**, scoped to the one bucket you just
+   created (not "all buckets").
+3. Save the **Access Key ID** and **Secret Access Key** it shows you — the
+   secret is only ever shown once.
+
+### 6.3 CORS (only needed if you'll ever list/preview from a different origin)
+
+Uploads/downloads here go through presigned URLs called directly from the
+browser, so add a CORS policy on the bucket (R2 dashboard → bucket →
+**Settings** → **CORS Policy**) allowing your app's origin(s):
+
+```json
+[
+  {
+    "AllowedOrigins": ["http://localhost:5173", "https://your-production-domain.example"],
+    "AllowedMethods": ["GET", "PUT"],
+    "AllowedHeaders": ["*"],
+    "MaxAgeSeconds": 3600
+  }
+]
+```
+
+### 6.4 Apply the new migration
+
+`0014_file_storage.sql` adds the `file_objects` table and its RLS/authorization
+functions. Apply it the same way as the others (§1) — `supabase db push`, or
+paste it into the SQL editor.
+
+### 6.5 Deploy the edge function and set its secrets
+
+The edge function is the only place the R2 credentials are ever held.
+
+```bash
+supabase functions deploy r2-storage
+
+supabase secrets set \
+  R2_ACCOUNT_ID=<your account id> \
+  R2_ACCESS_KEY_ID=<access key id from 6.2> \
+  R2_SECRET_ACCESS_KEY=<secret access key from 6.2> \
+  R2_BUCKET=riverside-files
+```
+
+(`SUPABASE_URL` and `SUPABASE_ANON_KEY` are already injected into every edge
+function automatically — don't set those yourself.)
+
+No frontend `.env` changes are needed for storage itself: the client only ever
+calls `supabase.functions.invoke("r2-storage", …)`, using the same
+`VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` it already has.
+
+### 6.6 Try it
+
+- Register a new student and upload a photo on the "Photo & Docs" step — it
+  should upload immediately and the preview should switch from the local
+  blob preview to the real thing once the signed URL round-trips.
+- Open that student's profile → **Documents** tab after attaching a file
+  during registration, and click **Open** — it should fetch a signed link
+  and open the file in a new tab.
+- If storage isn't configured yet (no `VITE_SUPABASE_URL`/anon key, i.e.
+  offline demo mode), photo/document upload silently falls back to the old
+  inline-base64 behavior so the demo still works without R2.
+
+### Known follow-ups (not yet implemented)
+
+- Removing a document/photo in the wizard only removes it from the form —
+  the R2 object and its `file_objects` row are left behind. `deleteFile()` in
+  `src/lib/storage.ts` does the right thing; it just isn't wired up to those
+  "Remove"/"×" buttons yet.
+- The `ALLOWED_OWNER_TYPES` set in the edge function and the `case` branches
+  in `can_view_file`/`can_manage_file` need a new entry each time you add a
+  genuinely new kind of upload (e.g. `staff_photo`).
 
 ## 7. What was removed / replaced
 
