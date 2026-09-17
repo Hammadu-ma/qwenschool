@@ -4,6 +4,20 @@ import tailwindcss from "@tailwindcss/vite";
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  build: {
+    // Skip legacy-browser transpilation — smaller, faster-to-parse output.
+    target: "esnext",
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          // Core framework: rarely changes, cached long-term by the browser
+          // across deploys instead of being re-downloaded with every route.
+          "vendor-react": ["react", "react-dom", "react-router-dom"],
+          "vendor-supabase": ["@supabase/supabase-js", "@tanstack/react-query"],
+        },
+      },
+    },
+  },
   server: {
     host: "0.0.0.0",
     port: 3000,

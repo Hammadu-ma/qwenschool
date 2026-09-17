@@ -1,21 +1,52 @@
-import { type ReactNode } from "react";
+import { lazy, Suspense, type ReactNode } from "react";
 import { HashRouter, Navigate, Route, Routes } from "react-router-dom";
 import { Compass } from "lucide-react";
 import { AppProvider, homePathFor, useApp } from "./store";
 import type { Role } from "./types";
 import { AppShell } from "./Layout";
 import { AccessDenied, LoginPage } from "./pages/Auth";
-import { AdminDashboard, GuardianDashboard, StudentDashboard, TeacherDashboard } from "./pages/dashboards";
-import {
-  FamiliesPage, GuardianFeesPage, ProfilePage, StudentProfilePage, StudentsPage, TeachersPage, UsersPage,
-} from "./pages/people";
-import {
+
+/**
+ * Route-level code splitting: only the login screen + shell are in the
+ * initial bundle. Everything below (including the heavy recharts/jspdf/
+ * dnd-kit-using academics page) is fetched on first navigation to a route
+ * that needs it, not before — this is what actually gates first paint.
+ *
+ * Each page module is dynamic-import()'d once per named export below, but
+ * the bundler/browser dedupes repeat import() calls to the same resolved
+ * chunk, so e.g. all seven `./pages/people` exports still cost one fetch.
+ */
+function named<M extends Record<string, any>>(loader: () => Promise<M>) {
+  return new Proxy({} as { [K in keyof M]: M[K] }, {
+    get: (_t, key: string) => lazy(() => loader().then((m) => ({ default: m[key] }))),
+  });
+}
+
+const dashboards = named(() => import("./pages/dashboards"));
+const { AdminDashboard, GuardianDashboard, StudentDashboard, TeacherDashboard } = dashboards;
+
+const people = named(() => import("./pages/people"));
+const { FamiliesPage, GuardianFeesPage, ProfilePage, StudentProfilePage, StudentsPage, TeachersPage, UsersPage } = people;
+
+const academics = named(() => import("./pages/academics"));
+const {
   AssignmentsPage, AttendancePage, AcademicYearsPage, ClassesPage, FeesPage, HomeworkPage, MarkEntryPage, ReportsPage, TimetablePage,
-} from "./pages/academics";
-import {
-  AnnouncementsPage, ContactsPage, EventsPage, MessagesPage, ModerationPage, NotificationsPage,
-} from "./pages/communication";
-import { AuditPage, RolesPage } from "./pages/admin";
+} = academics;
+
+const communication = named(() => import("./pages/communication"));
+const { AnnouncementsPage, ContactsPage, EventsPage, MessagesPage, ModerationPage, NotificationsPage } = communication;
+
+const admin = named(() => import("./pages/admin"));
+const { AuditPage, RolesPage } = admin;
+
+/** Suspense fallback for a lazy page chunk still downloading. */
+function PageLoading() {
+  return (
+    <div className="flex min-h-[40vh] items-center justify-center">
+      <div className="h-8 w-8 animate-spin rounded-full border-[3px] border-pine-200 border-t-pine-700" />
+    </div>
+  );
+}
 
 /** Shown briefly while the initial Supabase session check is still in
  *  flight — avoids redirecting an already-signed-in person to /login just
@@ -64,6 +95,7 @@ export default function App() {
   return (
     <AppProvider>
       <HashRouter>
+        <Suspense fallback={<PageLoading />}>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/" element={<HomeRedirect />} />
@@ -131,6 +163,7 @@ export default function App() {
             <Route path="*" element={<NotFound />} />
           </Route>
         </Routes>
+        </Suspense>
       </HashRouter>
     </AppProvider>
   );
