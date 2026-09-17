@@ -97,6 +97,66 @@ export const ALL_LAZY_GROUPS: LazyGroup[] = [
   "announcements", "messaging", "notifications", "events", "audit", "reports",
 ];
 
+/* =========================================================================
+   dbCache — per-tab instant-repaint cache
+
+   Not a source of truth; every value it returns is about to be (or was
+   just) confirmed by a live fetch. On a full page reload the app used to
+   sit on a blank spinner for the entire round trip to Supabase before
+   painting anything. This shaves that down to ~0 for a returning session:
+   the last confirmed snapshot for *this exact signed-in user*, on *this
+   browser tab*, paints immediately, then the real hydrateCore()/hydrateGroup()
+   call underneath it still runs and silently reconciles a moment later —
+   so a reload never shows more than a beat of (at most seconds-old, and
+   usually identical) data before it's re-confirmed live.
+
+   sessionStorage (not localStorage) is deliberate: it clears itself when
+   the tab closes, so there's no risk of a stale snapshot lingering for
+   days, and it's already scoped per-tab so two tabs signed in as different
+   people on a shared computer never collide.
+   ========================================================================= */
+const CACHE_VERSION = "v1";
+const cachePrefix = (uid: string) => `riverside_cache_${CACHE_VERSION}_${uid}_`;
+
+function cacheKey(uid: string, part: "core" | LazyGroup): string {
+  return `${cachePrefix(uid)}${part}`;
+}
+
+function readCache<T>(key: string): T | null {
+  try {
+    const raw = sessionStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : null;
+  } catch {
+    return null; // private browsing, corrupted entry, etc. — just skip the cache
+  }
+}
+
+function writeCache(key: string, value: unknown) {
+  try {
+    sessionStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Quota exceeded or storage unavailable — the cache is purely an
+    // optimization, so failing to write it should never break the app.
+  }
+}
+
+/** Wipes every cached snapshot for one user (called on logout) so nothing
+ *  from their session could ever flash onto screen for whoever uses this
+ *  tab next. */
+function clearUserCache(uid: string) {
+  try {
+    const prefix = cachePrefix(uid);
+    for (let i = sessionStorage.length - 1; i >= 0; i--) {
+      const k = sessionStorage.key(i);
+      if (k && k.startsWith(prefix)) sessionStorage.removeItem(k);
+    }
+  } catch {
+    // ignore
+  }
+}
+
+export const dbCache = { cacheKey, readCache, writeCache, clearUserCache };
+
 /* ---- field mappers, shared by hydrateCore/hydrateGroup so the Supabase
    row → DB shape logic lives in exactly one place each ---- */
 

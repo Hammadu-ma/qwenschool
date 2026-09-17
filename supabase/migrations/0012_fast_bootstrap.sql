@@ -10,7 +10,7 @@ security invoker
 stable
 as $$
   select jsonb_build_object(
-    'schools', coalesce((select jsonb_agg(to_jsonb(x)) from (select id,name,motto from public.schools) x), '[]'::jsonb),
+    'schools', coalesce((select jsonb_agg(to_jsonb(x)) from (select id,name,motto,bank_accounts from public.schools) x), '[]'::jsonb),
     'academic_years', coalesce((select jsonb_agg(to_jsonb(x)) from (select id,name,start_date,end_date,is_active from public.academic_years) x), '[]'::jsonb),
     'terms', coalesce((select jsonb_agg(to_jsonb(x)) from (select id,year_id,name,seq from public.terms) x), '[]'::jsonb),
     'classes', coalesce((select jsonb_agg(to_jsonb(x)) from (select id,name,level from public.classes) x), '[]'::jsonb),

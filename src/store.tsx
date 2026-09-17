@@ -6,7 +6,7 @@ import { buildSeed } from "./data/seed";
 import { supabase, isSupabaseConfigured, usernameToEmail } from "./lib/supabase";
 import {
   hydrate, hydrateCore, hydrateGroup, ALL_LAZY_GROUPS, sync, setProfileId, loadProfileForSession,
-  mapConversations, mapMessages,
+  mapConversations, mapMessages, dbCache,
   type DbMode, type LazyGroup,
 } from "./lib/backend";
 
@@ -365,18 +365,44 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const loadingGroupsRef = useRef<Set<LazyGroup>>(new Set());
   const [loadedGroupsTick, setLoadedGroupsTick] = useState(0);
 
-  /* Boot: every load goes straight to Supabase — no local cache, no fake
-   * seed standing in as if it were real data. The spinner stays up until
-   * hydrateCore() actually resolves against the live database. */
+  /* Boot: every load re-confirms against Supabase — never a fake seed
+   * standing in as if it were real data. The one exception is dbCache
+   * (see backend.ts): a per-tab, per-user instant-repaint of the last
+   * confirmed snapshot, painted while this same hydrateCore() call is
+   * still in flight underneath it and overwritten the moment it resolves.
+   * Without any cached snapshot, the spinner stays up until hydrateCore()
+   * actually resolves against the live database, exactly as before. */
   useEffect(() => {
     let mounted = true;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    // Set inside the session-check branch below and read again once
+    // hydrateCore() resolves, so a retry pass (isRetry=true, which skips
+    // that branch) still knows who to write the refreshed cache back for.
+    let uidForCache: string | null = null;
 
     const attempt = async (isRetry: boolean) => {
       if (!isRetry && isSupabaseConfigured && supabase) {
         const { data } = await supabase.auth.getSession();
         const uid = data.session?.user?.id ?? null;
-        if (uid) { setSessionUserId(uid); setProfileId(uid); }
+        uidForCache = uid;
+        if (uid) {
+          setSessionUserId(uid); setProfileId(uid);
+
+          // Instant paint: if this exact user already has a confirmed
+          // snapshot from earlier in this tab, show it right away instead
+          // of a blank spinner. hydrateCore() below still runs regardless
+          // and overwrites this the moment it lands — usually well under a
+          // second later — so this never risks the person acting on data
+          // that doesn't get reconciled.
+          const cached = dbCache.readCache<DB>(dbCache.cacheKey(uid, "core"));
+          if (cached && Array.isArray(cached.students) && Array.isArray(cached.years)) {
+            dbRef.current = cached;
+            setDb(cached);
+            setMode("live");
+            setYearId(cached.years.find((y) => y.active)?.id ?? cached.years[0]?.id ?? "");
+            setReady(true);
+          }
+        }
         supabase.auth.onAuthStateChange((_evt, session) => {
           const id = session?.user?.id ?? null;
           setSessionUserId(id);
@@ -414,6 +440,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setSchemaMissing(missing);
       setYearId(core.years.find((y) => y.active)?.id ?? core.years[0]?.id ?? "");
       setReady(true);
+      if (m === "live" && uidForCache) dbCache.writeCache(dbCache.cacheKey(uidForCache, "core"), core);
     };
 
     attempt(false);
@@ -451,11 +478,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (modeRef.current !== "live") return;
     if (loadedGroupsRef.current.has(group) || loadingGroupsRef.current.has(group)) return;
     loadingGroupsRef.current.add(group);
+
+    // Same instant-paint trick as the core boot cache: if this group was
+    // already fetched for this exact user earlier in this tab, show it
+    // immediately while the real fetch below confirms/reconciles it.
+    if (sessionUserId) {
+      const cached = dbCache.readCache<Partial<DB>>(dbCache.cacheKey(sessionUserId, group));
+      if (cached) {
+        dbRef.current = { ...dbRef.current, ...cached };
+        setDb(dbRef.current);
+      }
+    }
+
     hydrateGroup(group, dbRef.current)
       .then((partial) => {
         const merged: DB = { ...dbRef.current, ...partial };
         dbRef.current = merged;
         setDb(merged);
+        if (sessionUserId) dbCache.writeCache(dbCache.cacheKey(sessionUserId, group), partial);
       })
       .catch((e) => console.warn(`[store] failed to load ${group}:`, e))
       .finally(() => {
@@ -611,6 +651,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setMode(m);
       setSchemaMissing(missing);
       setYearId(fresh.years.find((y) => y.active)?.id ?? fresh.years[0]?.id ?? "");
+      if (m === "live") dbCache.writeCache(dbCache.cacheKey(id, "core"), fresh);
     }
     setLoadedGroupsTick((t) => t + 1);
 
@@ -633,6 +674,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const logout = () => {
     supabase?.auth.signOut();
+    if (sessionUserId) dbCache.clearUserCache(sessionUserId);
     setSessionUserId(null);
     setProfileId(null);
     // Wipe in-memory state along with the auth session — otherwise the next
