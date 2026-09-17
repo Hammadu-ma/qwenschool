@@ -1,16 +1,4 @@
 {
-  "$schema": "https://openapi.vercel.sh/vercel.json",
-  "buildCommand": "npm run build",
-  "outputDirectory": "dist",
-  "framework": "vite",
-
-  "functions": {
-    "api/**/*.ts": {
-      "memory": 256,
-      "maxDuration": 15
-    }
-  },
-
   "headers": [
     {
       "source": "/(.*)",
@@ -18,19 +6,7 @@
         { "key": "X-Content-Type-Options", "value": "nosniff" },
         { "key": "X-Frame-Options", "value": "DENY" },
         { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
-        {
-          "key": "Strict-Transport-Security",
-          "value": "max-age=63072000; includeSubDomains; preload"
-        },
-        {
-          "key": "Permissions-Policy",
-          "value": "camera=(), microphone=(), geolocation=(), interest-cohort=()"
-        },
-        {
-          "comment": "connect-src is 'self' only. That single directive is what makes the key removal enforceable rather than merely tidy: even if a compromised dependency reintroduced a Supabase client, the browser would refuse to let it reach supabase.co. Adjust only if you add a genuinely external endpoint.",
-          "key": "Content-Security-Policy",
-          "value": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https://*.r2.cloudflarestorage.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
-        }
+        { "key": "Permissions-Policy", "value": "camera=(), microphone=(), geolocation=()" }
       ]
     },
     {
@@ -38,20 +14,6 @@
       "headers": [
         { "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }
       ]
-    },
-    {
-      "source": "/api/(.*)",
-      "headers": [
-        { "key": "Cache-Control", "value": "private, no-store, max-age=0" }
-      ]
-    }
-  ],
-
-  "rewrites": [
-    {
-      "comment": "HashRouter serves everything from index.html; this keeps a hard refresh on any path working.",
-      "source": "/((?!api/).*)",
-      "destination": "/index.html"
     }
   ]
 }
