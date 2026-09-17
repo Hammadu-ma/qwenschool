@@ -344,6 +344,46 @@ interface Ctx {
 
 const AppCtx = createContext<Ctx | null>(null);
 
+/** Which DB fields each lazy group owns — mirrors the switch in
+ *  hydrateGroup() (backend.ts) and the fields it zeroes out on every core
+ *  hydrate. Used by mergeFreshCore() below. */
+const GROUP_FIELDS: Record<LazyGroup, (keyof DB)[]> = {
+  academics: ["structures", "assessmentMarks", "submissions", "grading"],
+  attendance: ["attendance"],
+  fees: ["fees", "paymentRequests"],
+  homework: ["homework"],
+  timetable: ["timetable"],
+  announcements: ["announcements"],
+  messaging: ["conversations", "messages"],
+  notifications: ["notifications"],
+  events: ["events"],
+  audit: ["audit"],
+  reports: ["reports"],
+};
+
+/**
+ * hydrateCore() always comes back with every lazy-group field forced empty
+ * (see backend.ts) — it has no way to know which groups this tab has
+ * already fetched. Blindly `setDb(core)`-ing that over the live db used to
+ * wipe out any group a page had already loaded (via ensureGroup, straight
+ * off the wire or instant-painted from its own cache) the moment the core
+ * hydrate landed — a visible "data shows, then disappears a beat later" on
+ * every refresh of a page like Attendance/Fees/Messages. This restores the
+ * already-loaded groups' fields from the current db before the fresh core
+ * replaces everything else, so a group only ever goes empty because
+ * hydrateGroup() itself said so, never as a side-effect of the core
+ * refresh racing past it.
+ */
+function mergeFreshCore(core: DB, current: DB, loaded: Set<LazyGroup>): DB {
+  const merged: DB = { ...core };
+  for (const group of loaded) {
+    for (const field of GROUP_FIELDS[group]) {
+      (merged as any)[field] = (current as any)[field];
+    }
+  }
+  return merged;
+}
+
 export function AppProvider({ children }: { children: ReactNode }) {
   const [db, setDb] = useState<DB>(() => buildSeed());
   const [ready, setReady] = useState(false);
@@ -440,11 +480,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      dbRef.current = core;
-      setDb(core);
+      const mergedCore = mergeFreshCore(core, dbRef.current, loadedGroupsRef.current);
+      dbRef.current = mergedCore;
+      setDb(mergedCore);
       setMode(m);
       setSchemaMissing(missing);
-      setYearId(core.years.find((y) => y.active)?.id ?? core.years[0]?.id ?? "");
+      setYearId(mergedCore.years.find((y) => y.active)?.id ?? mergedCore.years[0]?.id ?? "");
       setReady(true);
       if (m === "live" && uidForCache) dbCache.writeCache(dbCache.cacheKey(uidForCache, "core"), core);
     };
@@ -684,11 +725,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // second sign-in) landing stale data after the fact.
     hydrateCore().then(({ db: fresh, mode: m, schemaMissing: missing, transientError }) => {
       if (transientError || sessionUserIdRef.current !== id) return;
-      dbRef.current = fresh;
-      setDb(fresh);
+      const mergedFresh = mergeFreshCore(fresh, dbRef.current, loadedGroupsRef.current);
+      dbRef.current = mergedFresh;
+      setDb(mergedFresh);
       setMode(m);
       setSchemaMissing(missing);
-      setYearId(fresh.years.find((y) => y.active)?.id ?? fresh.years[0]?.id ?? "");
+      setYearId(mergedFresh.years.find((y) => y.active)?.id ?? mergedFresh.years[0]?.id ?? "");
       if (m === "live") dbCache.writeCache(dbCache.cacheKey(id, "core"), fresh);
       setLoadedGroupsTick((t) => t + 1);
     });
