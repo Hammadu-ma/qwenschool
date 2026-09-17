@@ -319,14 +319,25 @@ export function UsernameConflictModal({
   username: string;
   password: string;
   onCancel: () => void;
-  onReplace: () => void;
-  onUseNew: (username: string, password: string) => void;
+  onReplace: () => Promise<void> | void;
+  onUseNew: (username: string, password: string) => Promise<void> | void;
 }) {
   const [u, setU] = useState(username);
   const [p, setP] = useState(password);
+  const [busy, setBusy] = useState<"replace" | "useNew" | null>(null);
   const valid = u.trim().length > 0 && p.trim().length >= 6 && u.trim().toLowerCase() !== username.toLowerCase();
+
+  const runUseNew = async () => {
+    setBusy("useNew");
+    try { await onUseNew(u.trim().toLowerCase(), p.trim()); } finally { setBusy(null); }
+  };
+  const runReplace = async () => {
+    setBusy("replace");
+    try { await onReplace(); } finally { setBusy(null); }
+  };
+
   return (
-    <Modal title="Username already taken" kicker="Choose how to resolve it" onClose={onCancel}>
+    <Modal title="Username already taken" kicker="Choose how to resolve it" onClose={() => { if (!busy) onCancel(); }}>
       <div className="space-y-4">
         <p className="text-[13px] text-soft">
           <span className="rounded bg-paper px-1.5 py-0.5 font-mono font-bold text-ink">@{username}</span> is already used by{" "}
@@ -338,13 +349,13 @@ export function UsernameConflictModal({
           <p className="mb-2 text-[11.5px] font-bold uppercase tracking-[0.08em] text-soft">Use a different username or password instead</p>
           <div className="grid gap-2.5 sm:grid-cols-2">
             <Field label="New username">
-              <TextInput value={u} onChange={(e) => setU(e.target.value)} className="font-mono" autoFocus />
+              <TextInput value={u} onChange={(e) => setU(e.target.value)} className="font-mono" autoFocus disabled={!!busy} />
             </Field>
             <Field label="New password" hint="min. 6 characters">
-              <TextInput value={p} onChange={(e) => setP(e.target.value)} className="font-mono" />
+              <TextInput value={p} onChange={(e) => setP(e.target.value)} className="font-mono" disabled={!!busy} />
             </Field>
           </div>
-          <Btn variant="solid" size="sm" className="mt-3 w-full" disabled={!valid} onClick={() => onUseNew(u.trim().toLowerCase(), p.trim())}>
+          <Btn variant="solid" size="sm" className="mt-3 w-full" disabled={!valid || !!busy} busy={busy === "useNew"} onClick={runUseNew}>
             Save with these credentials
           </Btn>
         </div>
@@ -354,12 +365,12 @@ export function UsernameConflictModal({
           <p className="mt-1 text-[12px] text-rust-700/85">
             Permanently removes {existing.name}'s login and creates this one with <span className="font-mono font-bold">@{username}</span> in its place. Only do this if that account is stale or unused — {existing.name} will lose access immediately.
           </p>
-          <Btn variant="danger" size="sm" className="mt-3 w-full" onClick={onReplace}>
+          <Btn variant="danger" size="sm" className="mt-3 w-full" disabled={!!busy} busy={busy === "replace"} onClick={runReplace}>
             Replace @{existing.username} with this account
           </Btn>
         </div>
 
-        <Btn variant="ghost" size="sm" className="w-full" onClick={onCancel}>Cancel — don't create a login</Btn>
+        <Btn variant="ghost" size="sm" className="w-full" disabled={!!busy} onClick={onCancel}>Cancel — don't create a login</Btn>
       </div>
     </Modal>
   );

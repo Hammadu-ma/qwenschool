@@ -143,6 +143,7 @@ export function RegistrationWizard({ student, onClose, onSaved }: WizardProps) {
   };
 
   const [conflict, setConflict] = useState<UserAccount | null>(null);
+  const [saving, setSaving] = useState(false);
 
   // Does the actual write — student record, plus a login with the given
   // credentials if requested. replaceId, if set, drops that existing user
@@ -208,9 +209,19 @@ export function RegistrationWizard({ student, onClose, onSaved }: WizardProps) {
     if (!isEdit && f.makeLogin) {
       const existing = db.users.find((u) => u.username.toLowerCase() === loginUsername);
       if (existing) { setConflict(existing); return; }
-      await finalizeSave(loginUsername, f.password.trim());
+      setSaving(true);
+      try {
+        await finalizeSave(loginUsername, f.password.trim());
+      } finally {
+        setSaving(false);
+      }
     } else {
-      await finalizeSave();
+      setSaving(true);
+      try {
+        await finalizeSave();
+      } finally {
+        setSaving(false);
+      }
     }
   };
 
@@ -221,11 +232,11 @@ export function RegistrationWizard({ student, onClose, onSaved }: WizardProps) {
     <Modal
       title={isEdit ? `Edit ${student!.firstName} ${student!.lastName}` : "Register new student"}
       kicker={isEdit ? "Update the permanent record — history is preserved" : "One permanent record, reused everywhere"}
-      onClose={onClose}
+      onClose={() => { if (!saving) onClose(); }}
       wide
       footer={
         <>
-          <Btn variant="ghost" onClick={() => (step === 0 ? onClose() : setStep((s) => s - 1))}>
+          <Btn variant="ghost" disabled={saving} onClick={() => (step === 0 ? onClose() : setStep((s) => s - 1))}>
             <ChevronLeft className="h-4 w-4" /> {step === 0 ? "Cancel" : "Back"}
           </Btn>
           {step < STEPS.length - 1 ? (
@@ -233,7 +244,7 @@ export function RegistrationWizard({ student, onClose, onSaved }: WizardProps) {
               Next: {STEPS[step + 1]} <ChevronRight className="h-4 w-4" />
             </Btn>
           ) : (
-            <Btn variant="gold" onClick={save}><Check className="h-4 w-4" /> {isEdit ? "Save changes" : "Register student"}</Btn>
+            <Btn variant="gold" busy={saving} onClick={save}><Check className="h-4 w-4" /> {isEdit ? "Save changes" : "Register student"}</Btn>
           )}
         </>
       }
