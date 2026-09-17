@@ -5,6 +5,7 @@ import { AppProvider, homePathFor, useApp } from "./store";
 import type { Role } from "./types";
 import { AppShell } from "./Layout";
 import { AccessDenied, LoginPage } from "./pages/Auth";
+import { SkeletonCards, SkeletonPanel } from "./ui";
 
 /**
  * Route-level code splitting: only the login screen + shell are in the
@@ -39,11 +40,17 @@ const { AnnouncementsPage, ContactsPage, EventsPage, MessagesPage, ModerationPag
 const admin = named(() => import("./pages/admin"));
 const { AuditPage, RolesPage } = admin;
 
-/** Suspense fallback for a lazy page chunk still downloading. */
+/** Suspense fallback for a lazy page chunk still downloading. Mirrors the
+ *  page's eventual layout (a stat row + a content panel) with shimmering
+ *  placeholders instead of a spinner, so the shell doesn't jump/reflow once
+ *  the real content lands. */
 function PageLoading() {
   return (
-    <div className="flex min-h-[40vh] items-center justify-center">
-      <div className="h-8 w-8 animate-spin rounded-full border-[3px] border-pine-200 border-t-pine-700" />
+    <div className="anim-rise p-4 sm:p-6">
+      <div className="mb-4">
+        <SkeletonCards n={4} />
+      </div>
+      <SkeletonPanel rows={6} />
     </div>
   );
 }
