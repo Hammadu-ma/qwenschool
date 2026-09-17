@@ -9,11 +9,14 @@ import m8 from "../../supabase/migrations/0008_fix_auth_token_columns.sql?raw";
 import m9 from "../../supabase/migrations/0009_lowercase_usernames.sql?raw";
 import m10 from "../../supabase/migrations/0010_academic_years_permission.sql?raw";
 import m11 from "../../supabase/migrations/0011_conversation_participants_policy.sql?raw";
-import m12 from "../../supabase/migrations/0012_student_visible_published_submissions.sql?raw";
+import m12a from "../../supabase/migrations/0012_fast_bootstrap.sql?raw";
+import m12b from "../../supabase/migrations/0012_student_visible_published_submissions.sql?raw";
 import m13 from "../../supabase/migrations/0013_enable_realtime_messaging.sql?raw";
 import m14 from "../../supabase/migrations/0014_file_storage.sql?raw";
 import m15 from "../../supabase/migrations/0015_fee_payment_requests.sql?raw";
 import m16 from "../../supabase/migrations/0016_delete_user_account.sql?raw";
+import m17 from "../../supabase/migrations/0017_families_view_permission.sql?raw";
+import m18 from "../../supabase/migrations/0018_fix_account_login_email_mismatch.sql?raw";
 
 /**
  * The migration bundle ships inside the app as plain text. SQL DDL is not a
@@ -53,11 +56,14 @@ export const MIGRATIONS: MigrationFile[] = [
   { file: "0009_lowercase_usernames.sql", title: "Fix: login failed for usernames typed with any capital letters", sql: m9 },
   { file: "0010_academic_years_permission.sql", title: "Adds a dedicated academic-years/terms management permission", sql: m10 },
   { file: "0011_conversation_participants_policy.sql", title: "Fix: starting a new direct conversation always failed", sql: m11 },
-  { file: "0012_student_visible_published_submissions.sql", title: "Fix: students/guardians saw no grades even once published", sql: m12 },
+  { file: "0012_fast_bootstrap.sql", title: "Fast bootstrap — one request for initial shell, one for full snapshot", sql: m12a },
+  { file: "0012_student_visible_published_submissions.sql", title: "Fix: students/guardians saw no grades even once published", sql: m12b },
   { file: "0013_enable_realtime_messaging.sql", title: "Realtime — conversations update live instead of on next page load", sql: m13 },
   { file: "0014_file_storage.sql", title: "Generic file registry + authorization functions for Cloudflare R2 storage", sql: m14 },
   { file: "0015_fee_payment_requests.sql", title: "Guardian bank-transfer fee payments, pending admin review", sql: m15 },
   { file: "0016_delete_user_account.sql", title: "Fix: \"Delete\" on a user did nothing server-side — adds a real delete RPC", sql: m16 },
+  { file: "0017_families_view_permission.sql", title: "Adds a dedicated \"View families\" permission for the Families page", sql: m17 },
+  { file: "0018_fix_account_login_email_mismatch.sql", title: "Fix: new accounts with a real contact email could never log in", sql: m18 },
 ];
 
 /**
