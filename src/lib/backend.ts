@@ -861,7 +861,10 @@ export async function loadProfileForSession(userId: string): Promise<User | null
   if (!isSupabaseConfigured) return null;
   const { data } = await sb()!.from("profiles").select("*").eq("id", userId).maybeSingle();
   if (!data) return null;
-  const { data: gs } = await sb()!.from("guardian_students").select("student_id").eq("guardian_id", userId);
+  // guardian_students only matters for guardians — skip the extra round
+  // trip for the far more common teacher/student/admin sign-in, since this
+  // lookup now sits directly on the login critical path (see store.tsx).
+  const gs = data.role === "guardian" ? (await sb()!.from("guardian_students").select("student_id").eq("guardian_id", userId)).data : null;
   return {
     id: data.id, name: data.full_name, username: data.username, password: "",
     role: data.role, roleId: data.role_def_id, status: data.status,

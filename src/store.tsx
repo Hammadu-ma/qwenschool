@@ -350,6 +350,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [mode, setMode] = useState<DbMode>("off");
   const [schemaMissing, setSchemaMissing] = useState(false);
   const [sessionUserId, setSessionUserId] = useState<string | null>(null);
+  // Mirrors sessionUserId for the background hydrateCore() kicked off by
+  // login() below — that promise resolves after login() has already
+  // returned, so it needs a way to check "is this still the active session"
+  // that isn't a stale closure over the sessionUserId state at call time.
+  const sessionUserIdRef = useRef<string | null>(null);
   // False until the initial supabase.auth.getSession() call resolves. Routes
   // that redirect-to-login on "no currentUser" must wait for this instead of
   // reading a not-yet-checked session as "signed out".
@@ -357,6 +362,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [yearId, setYearId] = useState("");
   const [toastState, setToastState] = useState<Toast | null>(null);
   const dbRef = useRef(db);
+  const applySessionUserId = (id: string | null) => { sessionUserIdRef.current = id; setSessionUserId(id); };
   // Which feature groups this session has actually fetched — tracked with
   // both a ref (so ensureGroup can check synchronously and never double-fire
   // for two components that mount in the same tick) and state (so isGroupLoaded
@@ -386,7 +392,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const uid = data.session?.user?.id ?? null;
         uidForCache = uid;
         if (uid) {
-          setSessionUserId(uid); setProfileId(uid);
+          applySessionUserId(uid); setProfileId(uid);
 
           // Instant paint: if this exact user already has a confirmed
           // snapshot from earlier in this tab, show it right away instead
@@ -405,7 +411,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
         supabase.auth.onAuthStateChange((_evt, session) => {
           const id = session?.user?.id ?? null;
-          setSessionUserId(id);
+          applySessionUserId(id);
           setProfileId(id);
         });
       }
@@ -458,7 +464,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setMode(m);
     setSchemaMissing(missing);
     setYearId(loaded.years.find((y) => y.active)?.id ?? loaded.years[0]?.id ?? "");
-    if (m !== "live") { setSessionUserId(null); setProfileId(null); }
+    if (m !== "live") { applySessionUserId(null); setProfileId(null); }
     return missing ? "missing" : m;
   };
 
@@ -633,49 +639,67 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const { data, error } = await supabase.auth.signInWithPassword({ email: usernameToEmail(username), password });
     if (error || !data.user) return { ok: false, error: error?.message === "Invalid login credentials" ? "Incorrect username or password." : error?.message ?? "Sign-in failed." };
     const id = data.user.id;
-    setSessionUserId(id);
+    applySessionUserId(id);
     setProfileId(id);
 
-    // Always re-hydrate from scratch for whoever just signed in — never
-    // reuse whatever was already in memory (a previous person's session on
-    // a shared browser, or the anonymous pre-login state). Also drop every
-    // lazy-loaded group so pages that already mounted before this sign-in
-    // (or belonged to a previous session) fetch that data fresh under the
-    // new account instead of showing stale/wrong-user content.
+    // Drop every lazy-loaded group so pages that already mounted before this
+    // sign-in (or belonged to a previous session) fetch that data fresh
+    // under the new account instead of showing stale/wrong-user content.
     loadedGroupsRef.current = new Set();
     loadingGroupsRef.current = new Set();
-    const { db: fresh, mode: m, schemaMissing: missing, transientError } = await hydrateCore();
-    if (!transientError) {
+
+    // Instant paint from this user's last confirmed snapshot on this device,
+    // if any — same pattern as the boot-time instant-paint above — so the
+    // dashboard they land on doesn't flash zeroed-out data while the fresh
+    // hydrateCore() below is still in flight.
+    const cachedCore = dbCache.readCache<DB>(dbCache.cacheKey(id, "core"));
+    if (cachedCore && Array.isArray(cachedCore.students) && Array.isArray(cachedCore.years)) {
+      dbRef.current = cachedCore;
+      setDb(cachedCore);
+      setMode("live");
+      setYearId(cachedCore.years.find((y) => y.active)?.id ?? cachedCore.years[0]?.id ?? "");
+    }
+
+    // Resolving *who* just signed in only needs their own profile row — a
+    // single indexed lookup — not the ~14-table (or bootstrap-RPC) core
+    // hydrate. Fetching that in full before letting the person past the
+    // login button is what was making sign-in feel slow; it now runs in the
+    // background below instead, same as any other lazy group, and the
+    // dashboard reflows onto it a moment later.
+    let profile = getUser(dbRef.current, id) ?? (await loadProfileForSession(id));
+    if (profile && profile.status !== "active") {
+      await supabase.auth.signOut();
+      applySessionUserId(null);
+      setProfileId(null);
+      return { ok: false, error: "This account has been disabled. Contact the administrator." };
+    }
+    if (profile && !getUser(dbRef.current, id)) {
+      const merged: DB = { ...dbRef.current, users: [...dbRef.current.users.filter((u) => u.id !== profile!.id), profile!] };
+      dbRef.current = merged;
+      setDb(merged);
+    }
+
+    // Full core refresh, in the background — not awaited. Guarded against
+    // this no longer being the active session (e.g. a quick logout, or a
+    // second sign-in) landing stale data after the fact.
+    hydrateCore().then(({ db: fresh, mode: m, schemaMissing: missing, transientError }) => {
+      if (transientError || sessionUserIdRef.current !== id) return;
       dbRef.current = fresh;
       setDb(fresh);
       setMode(m);
       setSchemaMissing(missing);
       setYearId(fresh.years.find((y) => y.active)?.id ?? fresh.years[0]?.id ?? "");
       if (m === "live") dbCache.writeCache(dbCache.cacheKey(id, "core"), fresh);
-    }
-    setLoadedGroupsTick((t) => t + 1);
+      setLoadedGroupsTick((t) => t + 1);
+    });
 
-    let profile = getUser(dbRef.current, id);
-    if (!profile) profile = await loadProfileForSession(id);
-    if (profile) {
-      if (profile.status !== "active") { await supabase.auth.signOut(); setSessionUserId(null); setProfileId(null); return { ok: false, error: "This account has been disabled. Contact the administrator." }; }
-      // Belt-and-braces: the fresh hydrate above should already include this
-      // profile via RLS, but if it didn't for any reason, patch it in rather
-      // than leave currentUser unresolved right after a successful sign-in.
-      if (!getUser(dbRef.current, id)) {
-        const merged: DB = { ...dbRef.current, users: [...dbRef.current.users.filter((u) => u.id !== profile!.id), profile!] };
-        dbRef.current = merged;
-        setDb(merged);
-      }
-      return { ok: true, user: profile };
-    }
-    return { ok: true };
+    return profile ? { ok: true, user: profile } : { ok: true };
   };
 
   const logout = () => {
     supabase?.auth.signOut();
     if (sessionUserId) dbCache.clearUserCache(sessionUserId);
-    setSessionUserId(null);
+    applySessionUserId(null);
     setProfileId(null);
     // Wipe in-memory state along with the auth session — otherwise the next
     // sign-in on this tab/device (possibly a different person) would still
