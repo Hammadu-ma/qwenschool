@@ -31,6 +31,7 @@ export function StudentsPage({ scoped }: { scoped?: boolean }) {
   const [regOpen, setRegOpen] = useState(false);
 
   const isAdmin = currentUser?.role === "admin";
+  const canRegister = hasPermission(db, currentUser, "students.create");
   const role = currentUser?.role ?? "admin";
 
   // Authorization underneath the UI: the visible set is derived from relationships.
@@ -60,7 +61,7 @@ export function StudentsPage({ scoped }: { scoped?: boolean }) {
   return (
     <div className="mx-auto max-w-6xl">
       <PageHead {...head}>
-        {isAdmin && (
+        {canRegister && (
           <Btn variant="gold" onClick={() => setRegOpen(true)}><Plus className="h-4 w-4" /> Register student</Btn>
         )}
       </PageHead>

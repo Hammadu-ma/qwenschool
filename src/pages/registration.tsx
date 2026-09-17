@@ -9,6 +9,7 @@ import { describeSyncErrors, getClass, getSection, getYear, sectionLabel, todayI
 import { pushAudit } from "../rbac";
 import { Btn, Chip, Field, Modal, Panel, Select, TextArea, TextInput, UsernameConflictModal } from "../ui";
 import { getDownloadDataUrl, isStorageConfigured, uploadFile, useSignedUrl } from "../lib/storage";
+import { hasPermission } from "../rbac";
 
 const readAsDataUrl = (file: File) =>
   new Promise<string>((resolve, reject) => {
@@ -29,6 +30,14 @@ interface WizardProps {
 export function RegistrationWizard({ student, onClose, onSaved }: WizardProps) {
   const { db, currentUser, yearId, update, toast, reconnect } = useApp();
   const isEdit = !!student;
+  // Registering a student and issuing them a login are gated separately: the
+  // server enforces `students.create` on the insert and `users.manage` on
+  // account creation independently (a role like Coordinator can have one
+  // without the other), so the UI must mirror both checks rather than a
+  // single coarse "admin" flag — otherwise a user with only `students.create`
+  // could tick "Create a student login", fill it in, and only find out at
+  // save time that the login half of the request was rejected server-side.
+  const canCreateLogin = hasPermission(db, currentUser, "users.manage");
   // Generated once, up front — files uploaded during the wizard (before the
   // student row exists) need a stable id to key their storage path off of.
   const [studentId] = useState(() => student?.id ?? uid());
@@ -375,7 +384,7 @@ export function RegistrationWizard({ student, onClose, onSaved }: WizardProps) {
             <p className="text-soft">Admitted <span className="float-right font-semibold text-ink">{f.admDate}</span></p>
             <p className="text-soft">Documents <span className="float-right font-semibold text-ink">{docs.length} attached</span></p>
           </div>
-          {!isEdit && (
+          {!isEdit && canCreateLogin && (
             <div className="rounded-lg border border-pine-200 bg-pine-50 p-3.5">
               <label className="flex cursor-pointer items-center gap-2.5">
                 <input type="checkbox" checked={f.makeLogin} onChange={(e) => set({ makeLogin: e.target.checked })} className="h-4 w-4 accent-pine-700" />
@@ -389,6 +398,11 @@ export function RegistrationWizard({ student, onClose, onSaved }: WizardProps) {
                 </div>
               )}
             </div>
+          )}
+          {!isEdit && !canCreateLogin && (
+            <p className="rounded-lg border border-mist bg-paper px-3.5 py-2.5 text-[11.5px] text-soft">
+              Your role can register students but not create accounts — ask an administrator to set up this student's login afterward.
+            </p>
           )}
         </div>
       )}
