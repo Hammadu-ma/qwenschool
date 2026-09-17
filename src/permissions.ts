@@ -47,6 +47,7 @@ export const PERMISSION_CATALOG: PermissionDef[] = [
   { id: "attendance.manage", name: "Take attendance", description: "Record attendance registers.", category: "Attendance" },
 
   { id: "fees.view", name: "View fees", description: "See fee ledgers.", category: "Fees" },
+  { id: "fees.view_children", name: "View children's fees", description: "See and pay fees for registered children.", category: "Fees" },
   { id: "fees.manage", name: "Manage fees", description: "Record payments and adjust fees.", category: "Fees" },
 
   { id: "communication.view", name: "View communication", description: "Read announcements, messages and notifications.", category: "Communication" },
@@ -111,7 +112,7 @@ export const DEFAULT_PERMISSIONS: Record<string, string[]> = {
   guardian: [
     "students.view_children",
     "academics.view", "homework.view", "assignments.view",
-    "results.view_children", "attendance.view_children",
+    "results.view_children", "attendance.view_children", "fees.view_children",
     "communication.view", "communication.send",
     "communication.message_teacher", "communication.message_admin",
     "events.view",

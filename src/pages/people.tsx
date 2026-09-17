@@ -13,7 +13,7 @@ import {
 } from "../store";
 import {
   Avatar, Btn, Chip, EmptyState, Field, Modal, PageHead, Panel, Ring, RoleBadge, Select, Skel, SkeletonPanel, SkeletonRows,
-  Tabs, TextInput, UserAvatar, UsernameConflictModal, tdCls, thCls,
+  Stat, Tabs, TextInput, UserAvatar, UsernameConflictModal, tdCls, thCls,
 } from "../ui";
 import { getDownloadUrl, isStorageConfigured, uploadFile } from "../lib/storage";
 import { AccessDenied } from "./Auth";
@@ -699,6 +699,98 @@ function PayFeeModal({ student, item, onClose }: { student: Student; item: FeeIt
         </>
       )}
     </Modal>
+  );
+}
+
+/* Guardian-facing overview across every registered child — mirrors the
+   admin FeesPage ledger but scoped to this guardian's own children (RLS on
+   fee_items already limits reads to guardian_students, this just gives it a
+   proper sidebar destination instead of only being reachable one child's
+   profile at a time). */
+export function GuardianFeesPage() {
+  const { db, currentUser } = useApp();
+  const groupsLoaded = useLazyGroups("fees");
+  if (!hasPermission(db, currentUser, "fees.view_children")) {
+    return <AccessDenied required="fees.view_children" reason="You don't have permission to view fees." />;
+  }
+  const kids = childrenOf(db, currentUser);
+  const [payItem, setPayItem] = useState<{ student: Student; item: FeeItem } | null>(null);
+
+  const totals = kids.reduce((acc, s) => {
+    const f = feeStats(db, s.id);
+    acc.billed += f.billed; acc.paid += f.paid; acc.outstanding += f.outstanding;
+    return acc;
+  }, { billed: 0, paid: 0, outstanding: 0 });
+
+  return (
+    <div className="mx-auto max-w-4xl">
+      <PageHead kicker="Finance" title="Fees" sub="Fee ledgers for your registered children." />
+
+      {!groupsLoaded ? (
+        <SkeletonPanel rows={Math.min(kids.length || 3, 6)} />
+      ) : (
+      <>
+      <div className="anim-rise mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <Stat label="Billed" value={`ETB ${totals.billed.toLocaleString()}`} tone="steel" icon={<CreditCard className="h-4.5 w-4.5" />} />
+        <Stat label="Paid" value={`ETB ${totals.paid.toLocaleString()}`} tone="pine" icon={<Wallet className="h-4.5 w-4.5" />} />
+        <Stat label="Outstanding" value={`ETB ${totals.outstanding.toLocaleString()}`} tone="rust" icon={<Notebook className="h-4.5 w-4.5" />} />
+      </div>
+
+      {kids.length === 0 ? (
+        <Panel><EmptyState icon={<Baby className="h-5 w-5" />} title="No children linked" body="Contact the school office if this doesn't look right." /></Panel>
+      ) : (
+        <div className="space-y-4">
+          {kids.map((s) => {
+            const fees = feeStats(db, s.id);
+            return (
+              <Panel key={s.id} className="anim-rise overflow-hidden">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-mist px-4 py-3.5 sm:px-5">
+                  <span className="flex items-center gap-2.5">
+                    <Avatar student={s} size={30} />
+                    <span className="font-display text-[14px] font-bold text-ink">{fullName(s)}</span>
+                  </span>
+                  <div className="flex flex-wrap gap-2">
+                    <Chip tone="gray">Billed ETB {fees.billed.toLocaleString()}</Chip>
+                    <Chip tone="pine">Paid ETB {fees.paid.toLocaleString()}</Chip>
+                    <Chip tone={fees.outstanding > 0 ? "rust" : "pine"}>Due ETB {fees.outstanding.toLocaleString()}</Chip>
+                  </div>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[520px]">
+                    <thead className="border-b border-mist bg-paper/60"><tr><th className={thCls()}>Item</th><th className={thCls()}>Amount</th><th className={thCls()}>Paid</th><th className={thCls()}>Due date</th><th className={thCls()}>Status</th><th className={thCls()}></th></tr></thead>
+                    <tbody className="divide-y divide-mist/70">
+                      {fees.items.map((f) => {
+                        const pending = pendingRequestFor(db, f.id);
+                        const due = f.amount - f.paid > 0;
+                        return (
+                          <tr key={f.id}>
+                            <td className={`${tdCls()} font-bold text-ink`}>{f.label}</td>
+                            <td className={`${tdCls()} font-mono text-[12px]`}>ETB {f.amount.toLocaleString()}</td>
+                            <td className={`${tdCls()} font-mono text-[12px]`}>ETB {f.paid.toLocaleString()}</td>
+                            <td className={`${tdCls()} text-soft`}>{fmtDate(f.due)}</td>
+                            <td className={tdCls()}>
+                              {pending ? <Chip tone="gold">Pending review</Chip> : due ? <Chip tone="rust">ETB {(f.amount - f.paid).toLocaleString()} due</Chip> : <Chip tone="pine">Settled</Chip>}
+                            </td>
+                            <td className={`${tdCls()} text-right`}>
+                              {due && !pending && <Btn size="sm" variant="soft" onClick={() => setPayItem({ student: s, item: f })}><Wallet className="h-3.5 w-3.5" /> Pay</Btn>}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {fees.items.length === 0 && <tr><td colSpan={6} className="py-6 text-center text-[12px] text-soft">No fee items yet.</td></tr>}
+                    </tbody>
+                  </table>
+                </div>
+              </Panel>
+            );
+          })}
+        </div>
+      )}
+      </>
+      )}
+
+      {payItem && <PayFeeModal student={payItem.student} item={payItem.item} onClose={() => setPayItem(null)} />}
+    </div>
   );
 }
 

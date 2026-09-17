@@ -105,6 +105,7 @@ const NAV: Record<Role, NavGroup[]> = {
         { to: "/guardian/children", label: "My children", icon: <Baby className="h-4 w-4" />, perm: "students.view_children" },
         { to: "/guardian/grades", label: "Grades", icon: <FileBarChart2 className="h-4 w-4" />, perm: "results.view_children" },
         { to: "/guardian/attendance", label: "Attendance", icon: <CalendarCheck2 className="h-4 w-4" />, perm: "attendance.view_children" },
+        { to: "/guardian/fees", label: "Fees", icon: <Banknote className="h-4 w-4" />, perm: "fees.view_children" },
         { to: "/guardian/assignments", label: "Assignments", icon: <PenLine className="h-4 w-4" />, perm: "assignments.view" },
         { to: "/guardian/homework", label: "Homework", icon: <ClipboardList className="h-4 w-4" />, perm: "homework.view" },
       ],

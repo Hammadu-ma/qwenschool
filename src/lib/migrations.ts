@@ -17,6 +17,7 @@ import m15 from "../../supabase/migrations/0015_fee_payment_requests.sql?raw";
 import m16 from "../../supabase/migrations/0016_delete_user_account.sql?raw";
 import m17 from "../../supabase/migrations/0017_families_view_permission.sql?raw";
 import m18 from "../../supabase/migrations/0018_fix_account_login_email_mismatch.sql?raw";
+import m19 from "../../supabase/migrations/0019_guardian_fees_permission.sql?raw";
 
 /**
  * The migration bundle ships inside the app as plain text. SQL DDL is not a
@@ -64,6 +65,7 @@ export const MIGRATIONS: MigrationFile[] = [
   { file: "0016_delete_user_account.sql", title: "Fix: \"Delete\" on a user did nothing server-side — adds a real delete RPC", sql: m16 },
   { file: "0017_families_view_permission.sql", title: "Adds a dedicated \"View families\" permission for the Families page", sql: m17 },
   { file: "0018_fix_account_login_email_mismatch.sql", title: "Fix: new accounts with a real contact email could never log in", sql: m18 },
+  { file: "0019_guardian_fees_permission.sql", title: "Adds \"View children's fees\" permission — powers the guardian sidebar Fees page", sql: m19 },
 ];
 
 /**

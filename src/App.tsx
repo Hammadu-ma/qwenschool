@@ -7,7 +7,7 @@ import { AppShell } from "./Layout";
 import { AccessDenied, LoginPage } from "./pages/Auth";
 import { AdminDashboard, GuardianDashboard, StudentDashboard, TeacherDashboard } from "./pages/dashboards";
 import {
-  FamiliesPage, ProfilePage, StudentProfilePage, StudentsPage, TeachersPage, UsersPage,
+  FamiliesPage, GuardianFeesPage, ProfilePage, StudentProfilePage, StudentsPage, TeachersPage, UsersPage,
 } from "./pages/people";
 import {
   AssignmentsPage, AttendancePage, AcademicYearsPage, ClassesPage, FeesPage, HomeworkPage, MarkEntryPage, ReportsPage, TimetablePage,
@@ -124,6 +124,7 @@ export default function App() {
             <Route path="/guardian/children/:id" element={<Guard roles={["guardian"]} required="Guardian"><StudentProfilePage /></Guard>} />
             <Route path="/guardian/grades" element={<Guard roles={["guardian"]} required="Guardian"><ReportsPage /></Guard>} />
             <Route path="/guardian/attendance" element={<Guard roles={["guardian"]} required="Guardian"><AttendancePage /></Guard>} />
+            <Route path="/guardian/fees" element={<Guard roles={["guardian"]} required="Guardian"><GuardianFeesPage /></Guard>} />
             <Route path="/guardian/assignments" element={<Guard roles={["guardian"]} required="Guardian"><AssignmentsPage /></Guard>} />
             <Route path="/guardian/homework" element={<Guard roles={["guardian"]} required="Guardian"><HomeworkPage /></Guard>} />
 
