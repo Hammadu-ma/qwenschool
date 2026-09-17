@@ -1,4 +1,5 @@
 import { supabase, isSupabaseConfigured } from "./supabase";
+import { apiSession } from "./http";
 import { buildSeed } from "../data/seed";
 import type {
   DB, User, Student, Enrollment, StudentDoc, AssessmentStructure, AssessmentItem, AttendanceRecord,
@@ -43,7 +44,10 @@ export type DbMode = "live" | "local" | "off";
 export async function checkSchema(): Promise<DbMode | "missing" | "error"> {
   if (!isSupabaseConfigured) return "off";
   try {
-    const { error } = await sb()!.from("schools").select("id").limit(1);
+    // Probes through the API rather than PostgREST: get_reference is the
+    // smallest allowlisted read there is, and a "not found" from it means
+    // the migrations haven't been applied.
+    const { error } = await sb()!.rpc("get_reference", {});
     if (!error) return "live";
     const code = (error as { code?: string }).code ?? "";
     const msg = error.message ?? "";
@@ -78,14 +82,58 @@ export async function checkSchema(): Promise<DbMode | "missing" | "error"> {
    matters more than speed.
    ========================================================================= */
 
-async function sel<T = any>(table: string, select = "*"): Promise<T[] | null> {
-  if (!isSupabaseConfigured) return null;
-  const { data, error } = await sb()!.from(table).select(select);
-  if (error) {
-    console.warn(`[backend] could not read ${table}:`, error.message);
-    return null;
+/* ---------------------------------------------------------------------------
+   LEGACY READ PATH — deliberately contained, and on its way out.
+
+   `sel()` used to be `from(table).select('*')`, which needed the browser to
+   hold a database credential and have PostgREST access to every table. Both
+   are gone. Rather than reintroduce a generic table endpoint — which would
+   hand back exactly the surface this refactor removed — this reads the
+   allowlisted `get_app_snapshot()` once per session and serves table slices
+   out of it.
+
+   Be clear-eyed about what that is: a compatibility shim. It is the SAME
+   whole-database read the app always did, just behind the API now, so it is
+   no faster than before and it still grows with the school. It exists so
+   that pages which haven't been migrated to src/lib/api.ts keep working
+   today, not because it is a good way to read data.
+
+   Every page moved onto the paged hooks in api.ts stops touching this. When
+   the last one has, delete this function, delete `get_app_snapshot` from
+   api/_lib/allowlist.ts, and the legacy path is gone for good.
+   --------------------------------------------------------------------------- */
+
+let snapshotPromise: Promise<Record<string, any[]> | null> | null = null;
+
+/** One snapshot per session, shared by every caller in it. */
+function legacySnapshot(): Promise<Record<string, any[]> | null> {
+  if (snapshotPromise) return snapshotPromise;
+  snapshotPromise = (async () => {
+    const { data, error } = await sb()!.rpc<Record<string, any[]>>("get_app_snapshot");
+    if (error) {
+      console.warn("[backend] legacy snapshot failed:", error.message);
+      snapshotPromise = null; // let a later call retry
+      return null;
+    }
+    return data ?? null;
+  })();
+  return snapshotPromise;
+}
+
+/** Drops the cached snapshot — call after any write, and on sign-out. */
+export function invalidateLegacySnapshot() {
+  snapshotPromise = null;
+}
+
+async function sel<T = any>(table: string, _select = "*"): Promise<T[] | null> {
+  const snap = await legacySnapshot();
+  if (!snap) return null;
+  const rows = snap[table];
+  if (!Array.isArray(rows)) {
+    console.warn(`[backend] "${table}" is not in the snapshot — migrate this read to src/lib/api.ts`);
+    return [];
   }
-  return (data as T[]) ?? [];
+  return rows as T[];
 }
 
 export type LazyGroup =
@@ -529,16 +577,75 @@ export async function hydrate(): Promise<{ db: DB; mode: DbMode; schemaMissing: 
    sync — DB-diff → PostgreSQL
    ========================================================================= */
 
-async function upsert(table: string, rows: any[], onConflict?: string, errors?: string[]) {
-  if (!rows.length || !isSupabaseConfigured) return;
-  const q = sb()!.from(table).upsert(rows, { onConflict, ignoreDuplicates: false });
-  const { error } = await q;
-  if (error) { console.warn(`[backend] upsert ${table} failed:`, error.message); errors?.push(`${table}: ${error.message}`); }
+/* ---------------------------------------------------------------------------
+   LEGACY WRITE PATH — intentionally not shimmed.
+
+   Reads above got a compatibility shim so nothing breaks while pages
+   migrate. Writes do NOT, and the difference is deliberate.
+
+   To keep `upsert(table, rows)` working I would have had to publish an
+   endpoint that accepts an arbitrary table name and arbitrary row objects
+   and writes them. That is the single most dangerous thing this API could
+   offer: it would let any authenticated session attempt a write to any
+   table with any columns, and the only thing standing in the way would be
+   RLS — which is precisely the "one boundary, and it had better be perfect"
+   situation the move to a server backend exists to end.
+
+   So each write becomes a named operation instead, with its own permission
+   check, in supabase/migrations/0026_write_api.sql:
+
+       students          -> save_student, set_student_status
+       marks             -> save_student_marks, set_submission_status
+       attendance        -> save_register
+       fees              -> record_fee_payment, apply_fee_template
+       messages          -> send_message
+       notifications     -> mark_notifications_read
+       files             -> register_file, unregister_file
+       academic years    -> create_academic_year, set_active_year, close_year,
+                            rollover_year, promote_students
+       user accounts     -> create_user_account, delete_user_account
+
+   Until a page is moved onto one of those, its save will throw this error.
+   That is a loud, fixable failure rather than a silent security hole, and
+   the message names the operation to reach for.
+   --------------------------------------------------------------------------- */
+
+const WRITE_REPLACEMENTS: Record<string, string> = {
+  students: "save_student / set_student_status",
+  enrollments: "save_student (pass class_id + section_id)",
+  assessment_marks: "save_student_marks",
+  mark_submissions: "set_submission_status",
+  attendance_registers: "save_register",
+  attendance_entries: "save_register",
+  fee_items: "record_fee_payment / apply_fee_template",
+  messages: "send_message",
+  notifications: "mark_notifications_read",
+  academic_years: "create_academic_year / set_active_year / close_year",
+};
+
+function legacyWriteError(table: string): string {
+  const replacement = WRITE_REPLACEMENTS[table];
+  return (
+    `Writes to "${table}" no longer go through snapshot syncing. ` +
+    (replacement
+      ? `Use ${replacement} via callWrite() from src/lib/http.ts.`
+      : `Add a function to supabase/migrations and publish it in api/_lib/allowlist.ts.`) +
+    ` See SECURITY_AND_BACKEND.md.`
+  );
 }
+
+async function upsert(table: string, rows: any[], _onConflict?: string, errors?: string[]) {
+  if (!rows.length) return;
+  const msg = legacyWriteError(table);
+  console.error(`[backend] ${msg}`);
+  errors?.push(`${table}: ${msg}`);
+}
+
 async function remove(table: string, ids: string[], errors?: string[]) {
-  if (!ids.length || !isSupabaseConfigured) return;
-  const { error } = await sb()!.from(table).delete().in("id", ids);
-  if (error) { console.warn(`[backend] delete ${table} failed:`, error.message); errors?.push(`${table}: ${error.message}`); }
+  if (!ids.length) return;
+  const msg = legacyWriteError(table);
+  console.error(`[backend] ${msg}`);
+  errors?.push(`${table}: ${msg}`);
 }
 
 function diff<T extends { id: string }>(oldR: T[], newR: T[], key: (r: T) => string = (r) => r.id) {
@@ -686,7 +793,11 @@ async function doSync(oldDB: DB, newDB: DB, errors: string[]): Promise<void> {
     if (del.length) {
       const combos = del.map((k) => k.split("|"));
       for (const [sid, iid, stid] of combos) {
-        const { error } = await sb()!.from("assessment_marks").delete().eq("structure_id", sid).eq("item_id", iid).eq("student_id", stid);
+        // Clearing a mark is an empty value through the same named
+        // operation that sets one — there is no table delete to reach for.
+        const { error } = await sb()!.rpc("save_student_marks", {
+          p_structure_id: sid, p_student_id: stid, p_values: { [iid]: null },
+        });
         if (error) errors.push(`assessment_marks: ${error.message}`);
       }
     }
@@ -704,7 +815,9 @@ async function doSync(oldDB: DB, newDB: DB, errors: string[]): Promise<void> {
       const regRow = regRows.find((x) => x.id === rid);
       if (regRow) await upsert("attendance_registers", [regRow], undefined, errors);
       const entries = Object.entries(r.marks).map(([stid, status]) => ({ id: `${rid}|${stid}`, register_id: rid, student_id: stid, status }));
-      const { error: delErr } = await sb()!.from("attendance_entries").delete().eq("register_id", rid);
+      // Registers are written whole by save_register(), which removes anyone
+      // no longer in the payload — so there is nothing to delete separately.
+      const delErr = { message: legacyWriteError("attendance_entries") } as { message: string };
       if (delErr) errors.push(`attendance_entries: ${delErr.message}`);
       await upsert("attendance_entries", entries, undefined, errors);
     }
@@ -714,7 +827,8 @@ async function doSync(oldDB: DB, newDB: DB, errors: string[]): Promise<void> {
   for (const role of newDB.roles) {
     const before = oldDB.roles.find((r) => r.id === role.id);
     if (JSON.stringify(before?.permissions) !== JSON.stringify(role.permissions) && !role.permissions.includes("*")) {
-      const { error: delErr } = await sb()!.from("role_permissions").delete().eq("role_def_id", role.id);
+      // save_role() replaces a role's permission set atomically.
+      const delErr = { message: legacyWriteError("role_permissions") } as { message: string };
       if (delErr) errors.push(`role_permissions: ${delErr.message}`);
       await upsert("role_permissions", role.permissions.map((p) => ({ role_def_id: role.id, permission_id: p })), undefined, errors);
     }
@@ -830,22 +944,28 @@ async function syncProfiles(oldDB: DB, newDB: DB, errors: string[]) {
       continue;
     }
     if (JSON.stringify(before) === JSON.stringify(u)) continue;
-    const { error: updErr } = await sb()!.from("profiles").update({
-      full_name: u.name, username: u.username, email: u.email, phone: u.phone,
-      role: u.role, role_def_id: u.roleId, status: u.status,
-      teacher_id: u.teacherId ?? null, student_id: u.studentId ?? null,
-    }).eq("id", u.id);
+    // Editing a profile means editing someone's role and status, which is
+    // the most privilege-sensitive write in the system. It goes through a
+    // named operation that refuses to let you demote or disable yourself,
+    // and that replaces guardian-child links atomically rather than as a
+    // delete followed by an insert that might not happen.
+    //
+    // Note what is NOT sent: `username` and `role`. The login identity and
+    // the coarse role are fixed at account creation; changing either has to
+    // go through account creation/deletion so the auth record and the
+    // profile can never drift apart.
+    const { error: updErr } = await sb()!.rpc("update_user_account", {
+      p_payload: {
+        id: u.id,
+        full_name: u.name,
+        email: u.email ?? null,
+        phone: u.phone ?? null,
+        role_def_id: u.roleId,
+        status: u.status,
+        ...(u.role === "guardian" ? { children: u.childrenIds ?? [] } : {}),
+      },
+    });
     if (updErr) errors.push(`profile ${u.name}: ${updErr.message}`);
-    // guardian children → junction table replace
-    if (u.role === "guardian") {
-      const beforeKids = before.childrenIds ?? [];
-      const nowKids = u.childrenIds ?? [];
-      if (JSON.stringify(beforeKids) !== JSON.stringify(nowKids)) {
-        const { error: delErr } = await sb()!.from("guardian_students").delete().eq("guardian_id", u.id);
-        if (delErr) errors.push(`guardian_students: ${delErr.message}`);
-        await upsert("guardian_students", nowKids.map((sid) => ({ guardian_id: u.id, student_id: sid, relation: "Guardian" })), undefined, errors);
-      }
-    }
   }
 }
 
@@ -859,12 +979,19 @@ export const currentProfileId = () => _profileId;
 
 export async function loadProfileForSession(userId: string): Promise<User | null> {
   if (!isSupabaseConfigured) return null;
-  const { data } = await sb()!.from("profiles").select("*").eq("id", userId).maybeSingle();
+  // The server already knows who is signed in — it authenticated them. So
+  // this asks "who am I" rather than "fetch the row with this id", which
+  // also removes the possibility of a client asking about someone else.
+  const data = await apiSession();
   if (!data) return null;
-  // guardian_students only matters for guardians — skip the extra round
-  // trip for the far more common teacher/student/admin sign-in, since this
-  // lookup now sits directly on the login critical path (see store.tsx).
-  const gs = data.role === "guardian" ? (await sb()!.from("guardian_students").select("student_id").eq("guardian_id", userId)).data : null;
+  // Guardian-child links come from my_scope(), which resolves them on the
+  // server in the same request rather than a second round trip.
+  let childIds: string[] = [];
+  if (data.role === "guardian") {
+    const { data: scope } = await sb()!.rpc<{ childIds?: string[] }>("my_scope", {});
+    childIds = scope?.childIds ?? [];
+  }
+  const gs = childIds.map((student_id) => ({ student_id }));
   return {
     id: data.id, name: data.full_name, username: data.username, password: "",
     role: data.role, roleId: data.role_def_id, status: data.status,

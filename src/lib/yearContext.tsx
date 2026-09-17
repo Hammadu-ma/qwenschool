@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { supabase } from "./supabase";
+import { callRpc } from "./http";
 
 /**
  * The academic year is the axis the whole system turns on.
@@ -64,14 +64,12 @@ export function AcademicYearProvider({ children }: { children: ReactNode }) {
   // once a year, so it is fetched once and kept.
   const { data: years = [], isLoading } = useQuery({
     queryKey: ["academic-years"],
-    enabled: Boolean(supabase),
+    enabled: true,
     queryFn: async (): Promise<AcademicYear[]> => {
-      const { data, error } = await supabase!
-        .from("academic_years")
-        .select("id,name,start_date,end_date,is_active,status")
-        .order("start_date", { ascending: false });
-      if (error) throw error;
-      return (data ?? []) as AcademicYear[];
+      // Comes from get_reference(), which the API publishes — there is no
+      // direct table read from the browser any more.
+      const ref = await callRpc<{ years: AcademicYear[] }>("get_reference", {});
+      return ref?.years ?? [];
     },
   });
 

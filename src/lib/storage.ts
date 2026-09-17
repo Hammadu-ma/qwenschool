@@ -11,6 +11,7 @@
  */
 import { useEffect, useState } from "react";
 import { isSupabaseConfigured, supabase } from "./supabase";
+import { callWrite } from "./http";
 
 export type FileOwnerType = "student_photo" | "student_document" | "fee_receipt";
 
@@ -54,24 +55,21 @@ export async function uploadFile(opts: {
   });
   if (!put.ok) throw new Error(`Upload to storage failed (${put.status}).`);
 
-  const { data: userData } = await supabase.auth.getUser();
-  const { data, error } = await supabase
-    .from("file_objects")
-    .insert({
-      owner_type: ownerType,
-      owner_id: ownerId,
-      storage_key: key,
-      original_name: file.name,
-      mime_type: file.type || null,
-      size_bytes: file.size,
-      kind: kind ?? null,
-      uploaded_by: userData.user?.id ?? null,
-    })
-    .select("id")
-    .maybeSingle();
-  if (error) throw new Error(`File uploaded but metadata save failed: ${error.message}`);
+  // Metadata is recorded through a named API operation rather than a direct
+  // table insert. The server re-derives `uploaded_by` from the session instead
+  // of accepting it from the client, and re-checks that this user may touch
+  // this student at all — the old version trusted both.
+  const registered = await callWrite<{ fileId: string | null; key: string }>("register_file", {
+    p_owner_type: ownerType,
+    p_owner_id: ownerId,
+    p_storage_key: key,
+    p_original_name: file.name,
+    p_mime_type: file.type || null,
+    p_size_bytes: file.size,
+    p_kind: kind ?? null,
+  });
 
-  return { key, fileId: data?.id ?? null };
+  return { key, fileId: registered?.fileId ?? null };
 }
 
 /** Returns a short-lived signed GET URL for a stored object. */
@@ -97,10 +95,10 @@ export async function getDownloadDataUrl(ownerType: FileOwnerType, ownerId: stri
 /** Deletes the R2 object and its `file_objects` row. `fileId` is optional (only needed if you have it handy). */
 export async function deleteFile(ownerType: FileOwnerType, ownerId: string, key: string, fileId?: string | null) {
   await invokeStorage({ action: "delete", ownerType, ownerId, key });
-  if (supabase) {
-    const q = supabase.from("file_objects").delete();
-    await (fileId ? q.eq("id", fileId) : q.eq("storage_key", key));
-  }
+  // Key, not id: the storage key is what both sides agree on, and it spares
+  // every caller from having to carry a file id around just to delete.
+  void fileId;
+  await callWrite("unregister_file", { p_storage_key: key });
 }
 
 /**

@@ -5,7 +5,7 @@ import {
   useQueryClient,
   keepPreviousData,
 } from "@tanstack/react-query";
-import { supabase } from "./supabase";
+import { callRpc, callWrite } from "./http";
 import { useAcademicYear } from "./yearContext";
 
 /**
@@ -64,13 +64,13 @@ const STALE = {
   realtime: 0,
 };
 
-/** Calls a PostgREST RPC and throws on error so React Query can handle it. */
-async function rpc<T>(fn: string, args: Record<string, unknown> = {}): Promise<T> {
-  if (!supabase) throw new Error("Supabase is not configured");
-  const { data, error } = await supabase.rpc(fn, args);
-  if (error) throw new Error(`${fn}: ${error.message}`);
-  return data as T;
-}
+/**
+ * Every call goes through the server API — allowlisted, rate-limited, and
+ * authenticated by an httpOnly cookie the browser cannot read. Reads are
+ * coalesced by src/lib/http.ts; writes never are.
+ */
+const rpc = <T>(fn: string, args: Record<string, unknown> = {}) => callRpc<T>(fn, args);
+const write = <T>(fn: string, args: Record<string, unknown> = {}) => callWrite<T>(fn, args);
 
 /* ========================================================================
    Bootstrap — one request, role-shaped, year-scoped.
@@ -116,7 +116,7 @@ export function useBootstrap() {
   const { yearId } = useAcademicYear();
   return useQuery({
     queryKey: qk.bootstrap(yearId ?? ""),
-    enabled: Boolean(supabase && yearId),
+    enabled: Boolean(yearId),
     staleTime: STALE.session,
     queryFn: () => rpc<Bootstrap>("get_bootstrap", { p_year_id: yearId }),
   });
@@ -173,7 +173,7 @@ export function useStudents(filters: StudentFilters = {}) {
 
   const query = useQuery({
     queryKey: qk.students(yearId ?? "", { ...filters, page, pageSize }),
-    enabled: Boolean(supabase && yearId),
+    enabled: Boolean(yearId),
     staleTime: STALE.list,
     // Keeps the previous page on screen while the next one loads, so paging
     // and typing don't flash an empty table.
@@ -207,7 +207,7 @@ export function useStudentDetail(studentId: string | null) {
   const { yearId } = useAcademicYear();
   return useQuery({
     queryKey: qk.student(yearId ?? "", studentId ?? ""),
-    enabled: Boolean(supabase && yearId && studentId),
+    enabled: Boolean(yearId && studentId),
     staleTime: STALE.record,
     queryFn: () =>
       rpc<Record<string, unknown>>("get_student_detail", {
@@ -225,7 +225,7 @@ export function useMarksheet(structureId: string | null) {
   const { yearId } = useAcademicYear();
   return useQuery({
     queryKey: qk.marksheet(yearId ?? "", structureId ?? ""),
-    enabled: Boolean(supabase && structureId),
+    enabled: Boolean(structureId),
     staleTime: STALE.record,
     queryFn: () => rpc<Record<string, unknown>>("get_marksheet", { p_structure_id: structureId }),
   });
@@ -235,7 +235,7 @@ export function useRegister(classId: string | null, sectionId: string | null, da
   const { yearId } = useAcademicYear();
   return useQuery({
     queryKey: qk.register(yearId ?? "", classId ?? "", sectionId ?? "", day),
-    enabled: Boolean(supabase && yearId && classId && sectionId && day),
+    enabled: Boolean(yearId && classId && sectionId && day),
     staleTime: STALE.list,
     queryFn: () =>
       rpc<Record<string, unknown>>("get_register", {
@@ -262,7 +262,7 @@ export function useAttendanceSummary(classId?: string, sectionId?: string, from?
   const { yearId } = useAcademicYear();
   return useQuery({
     queryKey: [...qk.attendanceSummary(yearId ?? "", classId, sectionId), from ?? "*", to ?? "*"],
-    enabled: Boolean(supabase && yearId),
+    enabled: Boolean(yearId),
     staleTime: STALE.list,
     queryFn: () =>
       rpc<AttendanceSummaryRow[]>("get_attendance_summary", {
@@ -311,7 +311,7 @@ export function useFees(filters: FeeFilters = {}) {
 
   const query = useQuery({
     queryKey: qk.fees(yearId ?? "", { ...filters, page, pageSize }),
-    enabled: Boolean(supabase && yearId),
+    enabled: Boolean(yearId),
     staleTime: STALE.list,
     placeholderData: keepPreviousData,
     queryFn: () =>
@@ -352,7 +352,7 @@ export function useConversations() {
   const { yearId } = useAcademicYear();
   return useQuery({
     queryKey: qk.conversations(yearId ?? ""),
-    enabled: Boolean(supabase && yearId),
+    enabled: Boolean(yearId),
     staleTime: STALE.realtime,
     queryFn: () => rpc<unknown[]>("list_conversations", { p_year_id: yearId, p_limit: 30 }),
   });
@@ -369,7 +369,7 @@ export interface MessageRow {
 export function useMessages(conversationId: string | null, pageSize = 50) {
   return useInfiniteQuery({
     queryKey: qk.messages(conversationId ?? ""),
-    enabled: Boolean(supabase && conversationId),
+    enabled: Boolean(conversationId),
     staleTime: STALE.realtime,
     initialPageParam: null as string | null,
     queryFn: ({ pageParam }) =>
@@ -388,7 +388,7 @@ export function useMessages(conversationId: string | null, pageSize = 50) {
 export function useNotifications(unreadOnly = false, pageSize = 30) {
   return useInfiniteQuery({
     queryKey: qk.notifications(unreadOnly),
-    enabled: Boolean(supabase),
+    enabled: true,
     staleTime: STALE.realtime,
     initialPageParam: null as string | null,
     queryFn: ({ pageParam }) =>
@@ -406,7 +406,7 @@ export function useAuditLog(pageSize = 50) {
   const { yearId } = useAcademicYear();
   return useInfiniteQuery({
     queryKey: qk.audit(yearId ?? ""),
-    enabled: Boolean(supabase && yearId),
+    enabled: Boolean(yearId),
     staleTime: STALE.list,
     initialPageParam: null as string | null,
     queryFn: ({ pageParam }) =>
@@ -431,7 +431,7 @@ export function useYearAdmin() {
   return {
     createYear: useMutation({
       mutationFn: (v: { id: string; name: string; start: string; end: string; terms?: string[] }) =>
-        rpc("create_academic_year", {
+        write("create_academic_year", {
           p_id: v.id,
           p_name: v.name,
           p_start: v.start,
@@ -442,12 +442,12 @@ export function useYearAdmin() {
     }),
 
     setActiveYear: useMutation({
-      mutationFn: (yearId: string) => rpc("set_active_year", { p_year_id: yearId }),
+      mutationFn: (yearId: string) => write("set_active_year", { p_year_id: yearId }),
       onSuccess: invalidateEverything,
     }),
 
     closeYear: useMutation({
-      mutationFn: (yearId: string) => rpc("close_year", { p_year_id: yearId }),
+      mutationFn: (yearId: string) => write("close_year", { p_year_id: yearId }),
       onSuccess: () => qc.invalidateQueries({ queryKey: ["academic-years"] }),
     }),
 
@@ -455,14 +455,14 @@ export function useYearAdmin() {
      *  shapes, fee templates) into a new year. Records are never copied. */
     rollover: useMutation({
       mutationFn: (v: { from: string; to: string }) =>
-        rpc<Record<string, number>>("rollover_year", { p_from_year: v.from, p_to_year: v.to }),
+        write<Record<string, number>>("rollover_year", { p_from_year: v.from, p_to_year: v.to }),
       onSuccess: invalidateEverything,
     }),
 
     /** Move every active enrollment up one class level in one statement. */
     promote: useMutation({
       mutationFn: (v: { from: string; to: string; classId?: string; graduateTop?: boolean }) =>
-        rpc<{ promoted: number; graduated: number }>("promote_students", {
+        write<{ promoted: number; graduated: number }>("promote_students", {
           p_from_year: v.from,
           p_to_year: v.to,
           p_class_id: v.classId ?? null,
@@ -473,7 +473,7 @@ export function useYearAdmin() {
 
     /** Bill an entire class from one template. */
     applyFeeTemplate: useMutation({
-      mutationFn: (templateId: string) => rpc("apply_fee_template", { p_template_id: templateId }),
+      mutationFn: (templateId: string) => write("apply_fee_template", { p_template_id: templateId }),
       onSuccess: () => qc.invalidateQueries({ queryKey: ["fees"] }),
     }),
   };

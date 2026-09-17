@@ -567,11 +567,37 @@ export function AppProvider({ children }: { children: ReactNode }) {
    * session actually receives — see 0013_enable_realtime_messaging.sql. */
   const [onlineUserIds, setOnlineUserIds] = useState<Set<string>>(new Set());
   useEffect(() => {
+    // ---------------------------------------------------------------------
+    // REALTIME IS OFF WHILE THE APP IS ON THE SERVER API.
+    //
+    // Supabase Realtime is a direct WebSocket from the browser to the
+    // project, authenticated with a token the browser holds. The whole point
+    // of the API migration is that the browser holds no such token and has no
+    // route to the project — so this subscription cannot work as written, and
+    // the honest thing is to turn it off rather than leave a socket that
+    // silently never connects.
+    //
+    // What replaces it, in order of effort:
+    //   1. Polling. `useMessages()` / `useConversations()` in src/lib/api.ts
+    //      accept React Query's `refetchInterval`. A 5s poll on the open
+    //      thread is a two-line change and is genuinely fine for a school.
+    //   2. Server-sent events. Add `api/messages/stream.ts` holding a
+    //      server-side Supabase subscription and relaying it to the browser
+    //      over SSE. Keeps the credential server-side; one connection per
+    //      user. This is the right answer if live chat matters.
+    //
+    // Presence (the "online" dot) has no equivalent without one of the above,
+    // so it reports nobody rather than reporting wrongly.
+    // ---------------------------------------------------------------------
+    setOnlineUserIds(new Set());
+    return;
+
+    // eslint-disable-next-line no-unreachable
     if (mode !== "live" || !supabase || !sessionUserId) {
       setOnlineUserIds(new Set());
       return;
     }
-    const client = supabase;
+    const client = supabase as any;
     const channel = client.channel("school-realtime", { config: { presence: { key: sessionUserId } } });
 
     const mergeMessage = (row: any, isUpdate: boolean) => {
@@ -777,7 +803,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         <div className="anim-rise text-center">
           <div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-[3px] border-pine-200 border-t-pine-700" />
           <p className="font-display text-[15px] font-bold text-ink">Riverside SMS</p>
-          <p className="mt-1 text-[12px] text-soft">{isSupabaseConfigured ? "Connecting to Supabase…" : "Supabase isn't configured — set VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY."}</p>
+          <p className="mt-1 text-[12px] text-soft">{"Connecting…"}</p>
         </div>
       </div>
     );
