@@ -98,6 +98,10 @@ export function MarkEntryPage() {
   const isAdmin = role === "admin";
   const pairs = teacherPairs(db, currentUser);
 
+  if (!hasPermission(db, currentUser, "exams.view")) {
+    return <AccessDenied required="exams.view" reason="Your role doesn't include this permission. Ask an administrator to grant it in Roles & permissions if you need it." />;
+  }
+
   const allStructures = db.structures.filter((st) => st.yearId === yearId);
 
   const allowedStructures = allStructures.filter((st) => {
@@ -154,7 +158,11 @@ export function MarkEntryPage() {
   const canApprove = hasPermission(db, currentUser, "results.manage");
   const canPublish = hasPermission(db, currentUser, "results.publish");
   const canReopen = isSuperAdmin(db, currentUser); // DB enforces super-admin-only for this transition
-  const canEnter = hasPermission(db, currentUser, "exams.enter_marks") || isAdmin;
+  const canEnter = hasPermission(db, currentUser, "exams.enter_marks");
+  // The database only allows writing assessment structures with exams.manage —
+  // mirror that here so admin-shaped roles without it don't see buttons that
+  // would fail on save.
+  const canManageStructures = hasPermission(db, currentUser, "exams.manage");
   const canEdit = canEnter && (status === "draft" || status === "returned");
   const [confirmSubmit, setConfirmSubmit] = useState(false);
   const [returnOpen, setReturnOpen] = useState(false);
@@ -291,7 +299,7 @@ export function MarkEntryPage() {
   return (
     <div className="mx-auto max-w-6xl">
       <PageHead kicker="Examination" title="Mark entry" sub={isAdmin ? "Choose year, semester, grade, section and subject — totals, percentages, grades and ranks are all derived." : "Only subjects you are assigned to appear. Totals follow each structure's weights."}>
-        {isAdmin && <Btn variant="gold" onClick={() => setEditStruct("new")}><Plus className="h-4 w-4" /> New structure</Btn>}
+        {canManageStructures && <Btn variant="gold" onClick={() => setEditStruct("new")}><Plus className="h-4 w-4" /> New structure</Btn>}
       </PageHead>
 
       <div className="anim-rise mb-4 flex flex-wrap items-end gap-3 rounded-lg border border-mist bg-card p-3">
@@ -355,7 +363,7 @@ export function MarkEntryPage() {
       {!groupsLoaded ? (
         <SkeletonPanel />
       ) : allowedStructures.length === 0 ? (
-        <Panel className="anim-rise"><EmptyState icon={<Table2 className="h-5 w-5" />} title="No assessment structures in your scope" body={isAdmin ? "Create a structure: subject + period + assessments with max marks and weights." : "Structures appear here once the admin configures them for your subjects, or ask the office."} action={isAdmin ? <Btn onClick={() => setEditStruct("new")}><Plus className="h-4 w-4" /> New structure</Btn> : undefined} /></Panel>
+        <Panel className="anim-rise"><EmptyState icon={<Table2 className="h-5 w-5" />} title="No assessment structures in your scope" body={isAdmin ? "Create a structure: subject + period + assessments with max marks and weights." : "Structures appear here once the admin configures them for your subjects, or ask the office."} action={canManageStructures ? <Btn onClick={() => setEditStruct("new")}><Plus className="h-4 w-4" /> New structure</Btn> : undefined} /></Panel>
       ) : !structure ? (
         <Panel className="anim-rise">
           <EmptyState
@@ -379,7 +387,7 @@ export function MarkEntryPage() {
                   <SubmissionChip status={status} />
                   <Btn size="sm" variant="soft" onClick={() => exportMarkSheetCsv(db, structure, roster)}><FileDown className="h-3.5 w-3.5" /> CSV</Btn>
                   <Btn size="sm" variant="soft" onClick={() => exportMarkSheetPdf(db, structure, roster)}><Printer className="h-3.5 w-3.5" /> PDF</Btn>
-                  {isAdmin && <Btn size="sm" variant="gold" onClick={() => setEditStruct(structure)}><Pencil className="h-3.5 w-3.5" /> Edit structure</Btn>}
+                  {canManageStructures && <Btn size="sm" variant="gold" onClick={() => setEditStruct(structure)}><Pencil className="h-3.5 w-3.5" /> Edit structure</Btn>}
                 </div>
               </div>
 
@@ -473,7 +481,7 @@ export function MarkEntryPage() {
         </>
       )}
 
-      {editStruct && <StructureModal existing={editStruct === "new" ? undefined : editStruct} onClose={() => setEditStruct(null)} />}
+      {editStruct && canManageStructures && <StructureModal existing={editStruct === "new" ? undefined : editStruct} onClose={() => setEditStruct(null)} />}
 
       {structure && confirmSubmit && (
         <Modal title="Submit marks for review" kicker={`${getSubject(db, structure.subjectId)?.name} · ${getClass(db, structure.classId)?.name} · ${structure.period}`} onClose={() => !workflowBusy && setConfirmSubmit(false)}
@@ -1211,6 +1219,10 @@ export function AttendancePage() {
     return <AttendanceViewer />;
   }
 
+  if (!hasPermission(db, currentUser, "attendance.view")) {
+    return <AccessDenied required="attendance.view" reason="Your role doesn't include this permission. Ask an administrator to grant it in Roles & permissions if you need it." />;
+  }
+
   const canManage = hasPermission(db, currentUser, "attendance.manage");
   const isAdmin = role === "admin";
   const pairs = teacherPairs(db, currentUser);
@@ -1326,6 +1338,10 @@ export function AttendancePage() {
 function AttendanceViewer() {
   const { db, currentUser } = useApp();
   const role = currentUser?.role;
+  const viewPerm = role === "guardian" ? "attendance.view_children" : "attendance.view";
+  if (!hasPermission(db, currentUser, viewPerm)) {
+    return <AccessDenied required={viewPerm} reason="Your role doesn't include this permission. Ask an administrator to grant it in Roles & permissions if you need it." />;
+  }
   const kids = role === "guardian" ? childrenOf(db, currentUser) : (studentOf(db, currentUser) ? [studentOf(db, currentUser)!] : []);
   const [selId, setSelId] = useState(kids[0]?.id ?? "");
   const student = kids.find((k) => k.id === selId) ?? kids[0];
@@ -1377,6 +1393,9 @@ export function AssignmentsPage() {
   const role = currentUser?.role ?? "admin";
 
   if (role !== "admin") {
+    if (!hasPermission(db, currentUser, "assignments.view")) {
+      return <AccessDenied required="assignments.view" reason="Your role doesn't include this permission. Ask an administrator to grant it in Roles & permissions if you need it." />;
+    }
     let rows: { classId: string; sectionId: string; subjectId: string; teacherId: string }[] = [];
     if (role === "teacher") {
       for (const p of teacherPairs(db, currentUser)) for (const sid of p.subjectIds) rows.push({ classId: p.classId, sectionId: p.sectionId, subjectId: sid, teacherId: currentUser!.teacherId! });
@@ -2147,6 +2166,10 @@ export function HomeworkPage() {
   if (role === "student") return <StudentHomework />;
   if (role === "guardian") return <GuardianHomework />;
 
+  if (!hasPermission(db, currentUser, "homework.view")) {
+    return <AccessDenied required="homework.view" reason="Your role doesn't include this permission. Ask an administrator to grant it in Roles & permissions if you need it." />;
+  }
+
   const isAdmin = role === "admin";
   const canManage = hasPermission(db, currentUser, "homework.manage");
   const pairs = teacherPairs(db, currentUser);
@@ -2321,6 +2344,9 @@ function HomeworkRosterModal({ homework, onClose, canManage }: { homework: Homew
 /** Student: homework due for my class/section, with a self-serve "mark done". */
 function StudentHomework() {
   const { db, currentUser, update, toast } = useApp();
+  if (!hasPermission(db, currentUser, "homework.view")) {
+    return <AccessDenied required="homework.view" reason="Your role doesn't include this permission. Ask an administrator to grant it in Roles & permissions if you need it." />;
+  }
   const student = studentOf(db, currentUser);
   if (!student?.enrollment) return <AccessDenied required="homework.view" reason="No enrollment on record." />;
 
@@ -2371,6 +2397,9 @@ function StudentHomework() {
 /** Guardian: read-only, per child. */
 function GuardianHomework() {
   const { db, currentUser } = useApp();
+  if (!hasPermission(db, currentUser, "homework.view")) {
+    return <AccessDenied required="homework.view" reason="Your role doesn't include this permission. Ask an administrator to grant it in Roles & permissions if you need it." />;
+  }
   const kids = childrenOf(db, currentUser).filter((c) => c.enrollment);
   const [selId, setSelId] = useState(kids[0]?.id ?? "");
   const child = kids.find((k) => k.id === selId) ?? kids[0];

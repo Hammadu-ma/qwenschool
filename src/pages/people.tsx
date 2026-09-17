@@ -34,6 +34,13 @@ export function StudentsPage({ scoped }: { scoped?: boolean }) {
   const canRegister = hasPermission(db, currentUser, "students.create");
   const role = currentUser?.role ?? "admin";
 
+  // Level-1 view gate — matches the sidebar's perm for this route, so a role
+  // that has the link removed can't reach the page directly either.
+  const viewPerm = role === "admin" ? "students.view" : role === "teacher" ? "students.view_assigned" : role === "guardian" ? "students.view_children" : "students.view_self";
+  if (!hasPermission(db, currentUser, viewPerm)) {
+    return <AccessDenied required={viewPerm} reason="Your role doesn't include this permission. Ask an administrator to grant it in Roles & permissions if you need it." />;
+  }
+
   // Authorization underneath the UI: the visible set is derived from relationships.
   const allowedIds: Set<string> | null = useMemo(() => {
     if (role === "admin") return null; // null = everything
@@ -749,9 +756,18 @@ function EditStudentModal({ student, onClose }: { student: Student; onClose: () 
 
 /* ================= teachers + central assignment board (admin) ================= */
 export function TeachersPage() {
-  const { db, yearId, update, toast } = useApp();
+  const { db, currentUser, yearId, update, toast } = useApp();
   const [editT, setEditT] = useState<{ id?: string; name: string; specialty: string; phone: string; email: string } | null>(null);
   const [asg, setAsg] = useState({ classId: "c8", sectionId: "sec8b", subjectId: "math", teacherId: "t1" });
+
+  if (!hasPermission(db, currentUser, "teachers.view")) {
+    return <AccessDenied required="teachers.view" reason="Your role doesn't include this permission. Ask an administrator to grant it in Roles & permissions if you need it." />;
+  }
+  // Level-1 gates for the two write surfaces on this page — the database
+  // enforces these already (teachers.manage / academics.manage); mirror them
+  // here so the buttons don't appear only to fail on save.
+  const canManageTeachers = hasPermission(db, currentUser, "teachers.manage");
+  const canManageAssignments = hasPermission(db, currentUser, "academics.manage");
 
   const classesInSection = getClass(db, asg.classId)?.sections ?? [];
 
@@ -791,7 +807,7 @@ export function TeachersPage() {
   return (
     <div className="mx-auto max-w-6xl">
       <PageHead kicker="People" title="Teachers" sub="Staff records plus the central subject-assignment board — the single relationship that powers marks access, timetables and communication.">
-        <Btn variant="gold" onClick={() => setEditT({ name: "", specialty: "", phone: "", email: "" })}><Plus className="h-4 w-4" /> Add teacher</Btn>
+        {canManageTeachers && <Btn variant="gold" onClick={() => setEditT({ name: "", specialty: "", phone: "", email: "" })}><Plus className="h-4 w-4" /> Add teacher</Btn>}
       </PageHead>
 
       <div className="grid gap-4 lg:grid-cols-2">
@@ -812,10 +828,12 @@ export function TeachersPage() {
                     </p>
                     <p className="text-[11.5px] text-soft">{t.specialty || "—"} · {load.length} sections · {t.email}</p>
                   </div>
-                  <div className="flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-                    <button onClick={() => setEditT({ id: t.id, name: t.name, specialty: t.specialty ?? "", phone: t.phone ?? "", email: t.email ?? "" })} className="cursor-pointer rounded p-1.5 text-soft hover:bg-pine-100 hover:text-pine-700"><Pencil className="h-3.5 w-3.5" /></button>
-                    <button onClick={() => removeTeacher(t.id)} className="cursor-pointer rounded p-1.5 text-soft hover:bg-rust-100 hover:text-rust-600"><Trash2 className="h-3.5 w-3.5" /></button>
-                  </div>
+                  {canManageTeachers && (
+                    <div className="flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                      <button onClick={() => setEditT({ id: t.id, name: t.name, specialty: t.specialty ?? "", phone: t.phone ?? "", email: t.email ?? "" })} className="cursor-pointer rounded p-1.5 text-soft hover:bg-pine-100 hover:text-pine-700"><Pencil className="h-3.5 w-3.5" /></button>
+                      <button onClick={() => removeTeacher(t.id)} className="cursor-pointer rounded p-1.5 text-soft hover:bg-rust-100 hover:text-rust-600"><Trash2 className="h-3.5 w-3.5" /></button>
+                    </div>
+                  )}
                 </li>
               );
             })}
@@ -827,29 +845,33 @@ export function TeachersPage() {
             <h2 className="font-display text-[15px] font-bold">Teacher–subject assignments</h2>
             <p className="text-[11.5px] text-soft">AY {db.years.find((y) => y.id === yearId)?.name} · Grade → Section → Subject → Teacher</p>
           </div>
-          <div className="grid grid-cols-2 gap-3 p-5">
-            <Field label="Grade">
-              <Select value={asg.classId} onChange={(e) => setAsg((p) => ({ ...p, classId: e.target.value, sectionId: db.classes.find((c) => c.id === e.target.value)?.sections[0]?.id ?? "" }))}>
-                {db.classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </Select>
-            </Field>
-            <Field label="Section">
-              <Select value={asg.sectionId} onChange={(e) => setAsg((p) => ({ ...p, sectionId: e.target.value }))}>
-                {classesInSection.map((s) => <option key={s.id} value={s.id}>Section {s.name}</option>)}
-              </Select>
-            </Field>
-            <Field label="Subject">
-              <Select value={asg.subjectId} onChange={(e) => setAsg((p) => ({ ...p, subjectId: e.target.value }))}>
-                {db.subjects.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-              </Select>
-            </Field>
-            <Field label="Teacher">
-              <Select value={asg.teacherId} onChange={(e) => setAsg((p) => ({ ...p, teacherId: e.target.value }))}>
-                {db.teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-              </Select>
-            </Field>
-          </div>
-          <div className="px-5 pb-4"><Btn onClick={setAssignment}><BadgeCheck className="h-4 w-4" /> Save assignment</Btn></div>
+          {canManageAssignments && (
+            <>
+              <div className="grid grid-cols-2 gap-3 p-5">
+                <Field label="Grade">
+                  <Select value={asg.classId} onChange={(e) => setAsg((p) => ({ ...p, classId: e.target.value, sectionId: db.classes.find((c) => c.id === e.target.value)?.sections[0]?.id ?? "" }))}>
+                    {db.classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </Select>
+                </Field>
+                <Field label="Section">
+                  <Select value={asg.sectionId} onChange={(e) => setAsg((p) => ({ ...p, sectionId: e.target.value }))}>
+                    {classesInSection.map((s) => <option key={s.id} value={s.id}>Section {s.name}</option>)}
+                  </Select>
+                </Field>
+                <Field label="Subject">
+                  <Select value={asg.subjectId} onChange={(e) => setAsg((p) => ({ ...p, subjectId: e.target.value }))}>
+                    {db.subjects.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </Select>
+                </Field>
+                <Field label="Teacher">
+                  <Select value={asg.teacherId} onChange={(e) => setAsg((p) => ({ ...p, teacherId: e.target.value }))}>
+                    {db.teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                  </Select>
+                </Field>
+              </div>
+              <div className="px-5 pb-4"><Btn onClick={setAssignment}><BadgeCheck className="h-4 w-4" /> Save assignment</Btn></div>
+            </>
+          )}
           <div className="max-h-[300px] overflow-y-auto border-t border-mist">
             <ul className="divide-y divide-mist/70">
               {db.assignments.filter((a) => a.yearId === yearId).map((a) => (
@@ -865,7 +887,7 @@ export function TeachersPage() {
         </Panel>
       </div>
 
-      {editT && (
+      {editT && canManageTeachers && (
         <Modal title={editT.id ? "Edit teacher" : "Add teacher"} kicker="People" onClose={() => setEditT(null)}
           footer={<><Btn variant="ghost" onClick={() => setEditT(null)}>Cancel</Btn><Btn onClick={saveTeacher}>Save</Btn></>}>
           <div className="grid gap-4 sm:grid-cols-2">
@@ -951,9 +973,16 @@ function StudentPicker({
 
 /* ================= families (admin) ================= */
 export function FamiliesPage() {
-  const { db, update, toast, reconnect } = useApp();
+  const { db, currentUser, update, toast, reconnect } = useApp();
   const [edit, setEdit] = useState<{ id?: string; name: string; username: string; password: string; phone: string; email: string; childrenIds: string[] } | null>(null);
   const guardians = db.users.filter((u) => u.role === "guardian");
+
+  if (!hasPermission(db, currentUser, "families.view")) {
+    return <AccessDenied required="families.view" reason="Your role doesn't include this permission. Ask an administrator to grant it in Roles & permissions if you need it." />;
+  }
+  // The database only allows creating/editing guardian accounts with users.manage —
+  // mirror that here so the buttons don't appear only to fail on save.
+  const canManageGuardians = hasPermission(db, currentUser, "users.manage");
 
   const toggleChild = (id: string) =>
     setEdit((p) => p && { ...p, childrenIds: p.childrenIds.includes(id) ? p.childrenIds.filter((x) => x !== id) : [...p.childrenIds, id] });
@@ -997,7 +1026,7 @@ export function FamiliesPage() {
   return (
     <div className="mx-auto max-w-6xl">
       <PageHead kicker="People" title="Families" sub="Guardian accounts and the children connected to them. A guardian sees exactly these children — nothing more.">
-        <Btn variant="gold" onClick={() => setEdit({ name: "", username: "", password: "fam123", phone: "", email: "", childrenIds: [] })}><Plus className="h-4 w-4" /> Add guardian</Btn>
+        {canManageGuardians && <Btn variant="gold" onClick={() => setEdit({ name: "", username: "", password: "fam123", phone: "", email: "", childrenIds: [] })}><Plus className="h-4 w-4" /> Add guardian</Btn>}
       </PageHead>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -1011,8 +1040,10 @@ export function FamiliesPage() {
                   <p className="truncate text-[14px] font-bold text-ink">{g.name}</p>
                   <p className="font-mono text-[11px] text-soft">@{g.username} · {g.status}</p>
                 </div>
-                <button onClick={() => setEdit({ id: g.id, name: g.name, username: g.username, password: g.password, phone: g.phone ?? "", email: g.email ?? "", childrenIds: g.childrenIds ?? [] })}
-                  className="cursor-pointer rounded p-1.5 text-soft opacity-0 transition-all hover:bg-pine-100 hover:text-pine-700 group-hover:opacity-100"><Pencil className="h-3.5 w-3.5" /></button>
+                {canManageGuardians && (
+                  <button onClick={() => setEdit({ id: g.id, name: g.name, username: g.username, password: g.password, phone: g.phone ?? "", email: g.email ?? "", childrenIds: g.childrenIds ?? [] })}
+                    className="cursor-pointer rounded p-1.5 text-soft opacity-0 transition-all hover:bg-pine-100 hover:text-pine-700 group-hover:opacity-100"><Pencil className="h-3.5 w-3.5" /></button>
+                )}
               </div>
               <div className="space-y-2 p-4">
                 <p className="text-[10.5px] font-bold uppercase tracking-[0.12em] text-soft">{kids.length} registered child{kids.length === 1 ? "" : "ren"}</p>
@@ -1033,7 +1064,7 @@ export function FamiliesPage() {
         {guardians.length === 0 && <Panel className="md:col-span-2 xl:col-span-3"><EmptyState icon={<Baby className="h-5 w-5" />} title="No guardian accounts" body="Create a guardian account and connect one or more children." /></Panel>}
       </div>
 
-      {edit && (
+      {edit && canManageGuardians && (
         <Modal title={edit.id ? "Edit guardian" : "New guardian"} kicker="Families" onClose={() => setEdit(null)} wide
           footer={<><Btn variant="ghost" onClick={() => setEdit(null)}>Cancel</Btn><Btn onClick={save}><Baby className="h-4 w-4" /> Save guardian</Btn></>}>
           <div className="grid gap-4 sm:grid-cols-2">

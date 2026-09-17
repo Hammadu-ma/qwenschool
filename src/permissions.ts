@@ -23,6 +23,8 @@ export const PERMISSION_CATALOG: PermissionDef[] = [
   { id: "teachers.view", name: "View teachers", description: "Browse the teaching staff.", category: "Staff" },
   { id: "teachers.manage", name: "Manage teachers", description: "Add, edit and assign teachers.", category: "Staff" },
 
+  { id: "families.view", name: "View families", description: "Browse guardian accounts and the children connected to them.", category: "Staff" },
+
   { id: "academics.view", name: "View academics", description: "See classes, timetable and syllabus.", category: "Academics" },
   { id: "academics.manage", name: "Manage academics", description: "Edit classes, sections and assignments.", category: "Academics" },
   { id: "academics.manage_years", name: "Manage academic years & terms", description: "Create academic years, set the active year, and manage semesters/terms.", category: "Academics" },
